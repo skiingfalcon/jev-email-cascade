@@ -56,6 +56,9 @@ class DecisionResult:
     latency_ms: float = 0.0
     calls: int = 1
     error: str | None = None
+    # Generative backends only; Jev has neither.
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -70,6 +73,8 @@ class DecisionResult:
             "model": self.model,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "cost_usd": self.cost_usd,
             "cost_estimated": self.cost_estimated,
             "latency_ms": self.latency_ms,

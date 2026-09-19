@@ -149,7 +149,56 @@ def compute_metrics(run_json: dict, rows: list[dict]) -> dict:
         "latency_ms_p50": run_json.get("latency_ms_p50"),
         "latency_ms_p95": run_json.get("latency_ms_p95"),
         "error_count": run_json.get("error_count"),
+        "wall_s": run_json.get("wall_s"),
+        "input_tokens": run_json.get("input_tokens"),
+        "output_tokens": run_json.get("output_tokens"),
+        "cached_input_tokens": run_json.get("cached_input_tokens"),
+        "reasoning_tokens": run_json.get("reasoning_tokens"),
+        "reasoning_effort": run_json.get("reasoning_effort"),
+        "pricing": run_json.get("pricing"),
+        "llm_provider": run_json.get("llm_provider"),
+        "llm_model": run_json.get("llm_model"),
+        "llm_calls": run_json.get("llm_calls"),
+        "llm_cost_usd": run_json.get("llm_cost_usd"),
+        "llm_reasoning_tokens": run_json.get("llm_reasoning_tokens"),
     }
+
+
+def _tokens_text(metrics: dict) -> str | None:
+    """'in 67,120 (cached 0) / out 18,004 (reasoning 12,300)' -- None when the run recorded no
+    token counts at all (older run.json files)."""
+    if metrics.get("input_tokens") is None and metrics.get("output_tokens") is None:
+        return None
+    parts = [f"in {metrics.get('input_tokens') or 0:,}"]
+    if metrics.get("cached_input_tokens") is not None:
+        parts[-1] += f" (cached {metrics['cached_input_tokens']:,})"
+    parts.append(f"out {metrics.get('output_tokens') or 0:,}")
+    if metrics.get("reasoning_tokens") is not None:
+        parts[-1] += f" (reasoning {metrics['reasoning_tokens']:,})"
+    return " / ".join(parts)
+
+
+def _pricing_text(metrics: dict) -> str | None:
+    p = metrics.get("pricing")
+    if not p:
+        return None
+    text = f"list price ${p['input']}/M in, ${p['cached_input']}/M cached, ${p['output']}/M out"
+    if metrics.get("reasoning_effort"):
+        text += f"; reasoning_effort={metrics['reasoning_effort']}"
+    return text
+
+
+def _llm_text(metrics: dict) -> str | None:
+    if not metrics.get("llm_model"):
+        return None
+    text = f"{metrics.get('llm_provider') or 'local'} {metrics['llm_model']}"
+    if metrics.get("llm_calls") is not None:
+        text += f", {metrics['llm_calls']} calls"
+    if metrics.get("llm_cost_usd") is not None:
+        text += f", ${_fmt(metrics['llm_cost_usd'])}"
+    if metrics.get("llm_reasoning_tokens") is not None:
+        text += f", {metrics['llm_reasoning_tokens']:,} reasoning tokens"
+    return text
 
 
 def render_rich(metrics: dict, run_dir: Path, console: Console | None = None) -> None:
@@ -214,6 +263,13 @@ def render_rich(metrics: dict, run_dir: Path, console: Console | None = None) ->
         f"latency p50/p95: {_fmt(metrics['latency_ms_p50'])}/{_fmt(metrics['latency_ms_p95'])} ms  "
         f"|  errors: {metrics['error_count']}"
     )
+    for label, text in (
+        ("tokens", _tokens_text(metrics)),
+        ("pricing", _pricing_text(metrics)),
+        ("llm hook", _llm_text(metrics)),
+    ):
+        if text:
+            console.print(f"{label}: {text}")
 
 
 def ci_text_from(ci: tuple[float, float] | None) -> str:
@@ -238,6 +294,15 @@ def render_markdown(metrics: dict, run_dir: Path) -> str:
         f"- latency p50/p95: {_fmt(metrics['latency_ms_p50'])}/"
         f"{_fmt(metrics['latency_ms_p95'])} ms",
         f"- errors: {metrics['error_count']}",
+    ]
+    for label, text in (
+        ("tokens", _tokens_text(metrics)),
+        ("pricing", _pricing_text(metrics)),
+        ("llm hook", _llm_text(metrics)),
+    ):
+        if text:
+            lines.append(f"- {label}: {text}")
+    lines += [
         "",
         "| question | raw acc | 95% CI | acted acc (n) | mean conf on wrong |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -277,35 +342,68 @@ def render_markdown(metrics: dict, run_dir: Path) -> str:
     return "\n".join(lines)
 
 
+COMPARE_COLUMNS = (
+    "run",
+    "backend",
+    "model",
+    "category acc",
+    "priority exact / ±1",
+    "calls/email",
+    "tokens in / out (reasoning)",
+    "$ total",
+    "$/1K emails",
+    "llm hook $",
+    "latency p50 / p95 ms",
+    "errors",
+)
+
+
+def _compare_row(run_dir: Path, m: dict) -> list[str]:
+    if m.get("input_tokens") is not None or m.get("output_tokens") is not None:
+        tokens = f"{m['input_tokens'] or 0:,} / {m['output_tokens'] or 0:,}"
+        if m.get("reasoning_tokens") is not None:
+            tokens += f" ({m['reasoning_tokens']:,})"
+    else:
+        tokens = "-"
+    return [
+        run_dir.name,
+        str(m["backend"]),
+        str(m["model"]),
+        _fmt(m["category"]["accuracy"]),
+        f"{_fmt(m['priority']['exact'])} / {_fmt(m['priority']['within1'])}",
+        _fmt(m["calls_per_email"]),
+        tokens,
+        _fmt(m["cost_usd"]),
+        _fmt(m["cost_per_1k_emails"]),
+        _fmt(m.get("llm_cost_usd")),
+        f"{_fmt(m['latency_ms_p50'])} / {_fmt(m['latency_ms_p95'])}",
+        str(m["error_count"]),
+    ]
+
+
+def compare_rows(run_dirs: list[Path]) -> list[list[str]]:
+    rows = []
+    for run_dir in run_dirs:
+        run_json, results = load_run(run_dir)
+        rows.append(_compare_row(run_dir, compute_metrics(run_json, results)))
+    return rows
+
+
+def compare_markdown(run_dirs: list[Path]) -> str:
+    lines = [
+        "| " + " | ".join(COMPARE_COLUMNS) + " |",
+        "| --- | --- | --- | " + " | ".join("---:" for _ in COMPARE_COLUMNS[3:]) + " |",
+    ]
+    for row in compare_rows(run_dirs):
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
 def compare(run_dirs: list[Path], console: Console | None = None) -> None:
     console = console or Console()
-    all_metrics = []
-    for run_dir in run_dirs:
-        run_json, rows = load_run(run_dir)
-        all_metrics.append((run_dir, compute_metrics(run_json, rows)))
-
     table = Table(title="compare")
-    table.add_column("run")
-    table.add_column("backend")
-    table.add_column("category acc")
-    table.add_column("priority exact")
-    table.add_column("priority ±1")
-    table.add_column("calls/email")
-    table.add_column("cost/1K emails")
-    table.add_column("latency p50")
-    table.add_column("latency p95")
-    table.add_column("errors")
-    for run_dir, m in all_metrics:
-        table.add_row(
-            run_dir.name,
-            str(m["backend"]),
-            _fmt(m["category"]["accuracy"]),
-            _fmt(m["priority"]["exact"]),
-            _fmt(m["priority"]["within1"]),
-            _fmt(m["calls_per_email"]),
-            _fmt(m["cost_per_1k_emails"]),
-            _fmt(m["latency_ms_p50"]),
-            _fmt(m["latency_ms_p95"]),
-            str(m["error_count"]),
-        )
+    for col in COMPARE_COLUMNS:
+        table.add_column(col)
+    for row in compare_rows(run_dirs):
+        table.add_row(*row)
     console.print(table)

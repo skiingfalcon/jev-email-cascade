@@ -11,6 +11,11 @@ forced to a single token, and the probability read from the token's own log-prob
 than a number the model typed. Costs eight times the calls; the report is where that trade
 becomes visible.
 
+``frontier`` is ``gen-json`` pointed at a hosted frontier model (OpenAI ``gpt-5.6-terra`` by
+default) -- the reference row the whole comparison is priced against. Hosted reasoning models
+reject ``logprobs``, so the token-probability shape is not available there; only the JSON shape
+is compared, at list price.
+
 Both map onto the same :class:`~jev_email_cascade.backends.Answer` schema Jev uses, so nothing
 downstream needs to know which backend ran. ``MockGenerative`` exercises the same mapping code
 with synthetic model output, so the offline demo is not a separate implementation to trust.
@@ -34,6 +39,64 @@ from jev_email_cascade.questions import Choice, Noul, Question, Score
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+PROFILES = ("local", "openai")
+
+
+class MissingFrontierKeyError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """$ per million tokens. ``flat(x)`` reproduces the old single-price estimate."""
+
+    input: float = 0.0
+    cached_input: float = 0.0
+    output: float = 0.0
+
+    @classmethod
+    def flat(cls, price_per_mtok: float) -> Pricing:
+        return cls(price_per_mtok, price_per_mtok, price_per_mtok)
+
+    @classmethod
+    def frontier(cls, settings: Settings) -> Pricing:
+        return cls(
+            settings.frontier_price_input_per_mtok,
+            settings.frontier_price_cached_input_per_mtok,
+            settings.frontier_price_output_per_mtok,
+        )
+
+    @property
+    def zero(self) -> bool:
+        return not (self.input or self.cached_input or self.output)
+
+    def cost(
+        self, prompt_tokens: int | None, completion_tokens: int | None, cached_tokens: int | None
+    ) -> float:
+        if self.zero:
+            return 0.0
+        prompt = prompt_tokens or 0
+        cached = min(cached_tokens or 0, prompt)
+        return (
+            (prompt - cached) * self.input
+            + cached * self.cached_input
+            + (completion_tokens or 0) * self.output
+        ) / 1_000_000
+
+    def as_dict(self) -> dict:
+        return {"input": self.input, "cached_input": self.cached_input, "output": self.output}
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def parse_json_object(content: str) -> dict | None:
@@ -154,17 +217,26 @@ def answer_from_token_probs(q: Question, probs: dict[str, float]) -> Answer:
 
 @dataclass
 class _ChatCall:
-    content: str | None
-    top_logprobs: list[dict] | None
-    prompt_tokens: int | None
-    completion_tokens: int | None
-    cached_tokens: int | None
-    latency_ms: float
+    content: str | None = None
+    top_logprobs: list[dict] | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    latency_ms: float = 0.0
     error: str | None = None
 
 
 class _ChatClient:
-    """The one seam that talks to an OpenAI-compatible chat/completions endpoint."""
+    """The one seam that talks to an OpenAI-compatible chat/completions endpoint.
+
+    ``profile="local"`` is llama-server (temperature 0, ``max_tokens``, ``logprobs`` allowed,
+    ``reasoning_effort`` via ``chat_template_kwargs``). ``profile="openai"`` is a hosted frontier
+    reasoning model: ``max_completion_tokens`` instead of ``max_tokens``, no ``temperature`` or
+    ``seed`` (not consistently accepted), ``reasoning_effort`` as a top-level field, and
+    ``logprobs`` refused up front because the model does not return them -- the same conventions
+    llama-cpp-spark's ``OpenAIEndpoint`` settled on against the same API.
+    """
 
     def __init__(
         self,
@@ -174,9 +246,21 @@ class _ChatClient:
         api_key: str | None = None,
         timeout_s: float = 60.0,
         transport: httpx.BaseTransport | None = None,
+        profile: str = "local",
+        reasoning_effort: str | None = None,
+        retries: int = 5,
+        retry_delay_s: float = 1.0,
+        max_retry_delay_s: float = 30.0,
     ) -> None:
+        if profile not in PROFILES:
+            raise ValueError(f"unknown profile {profile!r}; choose from {PROFILES}")
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.profile = profile
+        self.reasoning_effort = reasoning_effort
+        self.retries = retries
+        self.retry_delay_s = retry_delay_s
+        self.max_retry_delay_s = max_retry_delay_s
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -187,6 +271,44 @@ class _ChatClient:
     def close(self) -> None:
         self._client.close()
 
+    def healthy(self) -> bool:
+        """``GET /models/{model}`` for a hosted provider (listing all models needs broader
+        permissions than reading one), ``GET /models`` for llama-server."""
+        url = f"{self.base_url}/models"
+        if self.profile == "openai":
+            url += f"/{self.model}"
+        try:
+            r = self._client.get(url)
+        except httpx.HTTPError:
+            return False
+        return r.status_code == 200
+
+    def build_body(
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int,
+        logprobs: bool = False,
+        top_logprobs: int = 10,
+        response_format: dict | None = None,
+    ) -> dict:
+        body: dict = {"model": self.model, "messages": messages}
+        if self.profile == "openai":
+            body["max_completion_tokens"] = max_tokens
+            if self.reasoning_effort:
+                body["reasoning_effort"] = self.reasoning_effort
+        else:
+            body["temperature"] = 0
+            body["max_tokens"] = max_tokens
+            if self.reasoning_effort:
+                body["chat_template_kwargs"] = {"reasoning_effort": self.reasoning_effort}
+        if logprobs:
+            body["logprobs"] = True
+            body["top_logprobs"] = top_logprobs
+        if response_format is not None:
+            body["response_format"] = response_format
+        return body
+
     def complete(
         self,
         messages: list[dict],
@@ -194,35 +316,47 @@ class _ChatClient:
         max_tokens: int,
         logprobs: bool = False,
         top_logprobs: int = 10,
+        response_format: dict | None = None,
     ) -> _ChatCall:
-        body: dict = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-        }
-        if logprobs:
-            body["logprobs"] = True
-            body["top_logprobs"] = top_logprobs
+        if logprobs and self.profile == "openai":
+            return _ChatCall(error="logprobs not supported by this provider")
+        body = self.build_body(
+            messages,
+            max_tokens=max_tokens,
+            logprobs=logprobs,
+            top_logprobs=top_logprobs,
+            response_format=response_format,
+        )
         t0 = time.perf_counter()
-        try:
-            r = self._client.post(f"{self.base_url}/chat/completions", json=body)
-        except httpx.HTTPError as exc:
-            return _ChatCall(
-                None, None, None, None, None, (time.perf_counter() - t0) * 1000, str(exc)
-            )
-        latency_ms = (time.perf_counter() - t0) * 1000
-        if r.status_code != 200:
-            return _ChatCall(
-                None, None, None, None, None, latency_ms, f"http {r.status_code}: {r.text[:300]}"
-            )
-        data = r.json()
+        delay = self.retry_delay_s
+        last_error = "no attempt made"
+        for attempt in range(self.retries + 1):
+            try:
+                r = self._client.post(f"{self.base_url}/chat/completions", json=body)
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                if attempt >= self.retries:
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2, self.max_retry_delay_s)
+                continue
+            if r.status_code == 200:
+                return self._parse(r.json(), (time.perf_counter() - t0) * 1000)
+            last_error = f"http {r.status_code}: {r.text[:300]}"
+            if r.status_code not in RETRYABLE_STATUS or attempt >= self.retries:
+                break
+            time.sleep(retry_after_seconds(r) or delay)
+            delay = min(delay * 2, self.max_retry_delay_s)
+        return _ChatCall(latency_ms=(time.perf_counter() - t0) * 1000, error=last_error)
+
+    @staticmethod
+    def _parse(data: dict, latency_ms: float) -> _ChatCall:
         usage = data.get("usage", {}) or {}
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]
-        except (KeyError, IndexError):
-            return _ChatCall(None, None, None, None, None, latency_ms, "no message content")
+        except (KeyError, IndexError, TypeError):
+            return _ChatCall(latency_ms=latency_ms, error="no message content")
         top: list[dict] | None = None
         lp = (choice.get("logprobs") or {}).get("content")
         if lp:
@@ -233,8 +367,50 @@ class _ChatClient:
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+            reasoning_tokens=(usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
             latency_ms=latency_ms,
         )
+
+
+def local_chat_client(
+    settings: Settings,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    reasoning_effort: str | None = None,
+) -> _ChatClient | None:
+    if not settings.llm_base_url:
+        return None
+    return _ChatClient(
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        api_key=settings.llm_api_key,
+        timeout_s=settings.timeout_s,
+        transport=transport,
+        profile="local",
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def frontier_chat_client(
+    settings: Settings,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    reasoning_effort: str | None = None,
+) -> _ChatClient:
+    if not settings.openai_api_key:
+        raise MissingFrontierKeyError(
+            "OPENAI_API_KEY is not set; the frontier backend needs it (put it in .env, the same "
+            "variable llama-cpp-spark reads). FRONTIER_MODEL and OPENAI_BASE_URL are optional."
+        )
+    return _ChatClient(
+        base_url=settings.frontier_base_url,
+        model=settings.frontier_model,
+        api_key=settings.openai_api_key,
+        timeout_s=max(settings.timeout_s, 180.0),  # reasoning models think before they answer
+        transport=transport,
+        profile="openai",
+        reasoning_effort=reasoning_effort,
+    )
 
 
 GEN_JSON_SYSTEM = (
@@ -250,33 +426,49 @@ class GenJsonBackend:
     """One chat completion per email; every question answered in the same JSON object."""
 
     name = "gen-json"
+    # Local gpt-oss answers in ~150 tokens; a hosted reasoning model spends its budget thinking
+    # first and the answer is cut off if the cap is too tight, so the frontier profile gets room.
+    max_tokens_by_profile = {"local": 600, "openai": 4000}
 
-    def __init__(self, client: _ChatClient, price_per_mtok: float = 0.0) -> None:
+    def __init__(self, client: _ChatClient, pricing: Pricing | None = None) -> None:
         self.client = client
-        self.price_per_mtok = price_per_mtok
+        self.pricing = pricing or Pricing()
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, price_per_mtok: float = 0.0, transport=None):
-        if not settings.llm_base_url:
-            return None
-        client = _ChatClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            api_key=settings.llm_api_key,
-            timeout_s=settings.timeout_s,
-            transport=transport,
-        )
-        return cls(client, price_per_mtok=price_per_mtok)
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        pricing: Pricing | None = None,
+        transport=None,
+        reasoning_effort: str | None = None,
+    ):
+        client = local_chat_client(settings, transport=transport, reasoning_effort=reasoning_effort)
+        return None if client is None else cls(client, pricing=pricing)
 
     def decide(self, state: dict[str, str], questions: dict[str, Question]) -> DecisionResult:
         lines = [f"- {question_prompt(qid, q)}" for qid, q in questions.items()]
         user = "Email:\n" + json.dumps(state) + "\n\nQuestions:\n" + "\n".join(lines)
         call = self.client.complete(
             [{"role": "system", "content": GEN_JSON_SYSTEM}, {"role": "user", "content": user}],
-            max_tokens=600,
+            max_tokens=self.max_tokens_by_profile[self.client.profile],
         )
         if call.error or call.content is None:
-            return DecisionResult(answers={}, error=call.error, latency_ms=call.latency_ms, calls=1)
+            return DecisionResult(
+                answers={},
+                model=self.client.model,
+                error=call.error or "empty message content",
+                latency_ms=call.latency_ms,
+                calls=1,
+                input_tokens=call.prompt_tokens,
+                output_tokens=call.completion_tokens,
+                cached_input_tokens=call.cached_tokens,
+                reasoning_tokens=call.reasoning_tokens,
+                cost_usd=self.pricing.cost(
+                    call.prompt_tokens, call.completion_tokens, call.cached_tokens
+                ),
+                cost_estimated=True,
+            )
         parsed = parse_json_object(call.content)
         answers: dict[str, Answer] = {}
         error = None
@@ -293,12 +485,38 @@ class GenJsonBackend:
             model=self.client.model,
             input_tokens=call.prompt_tokens,
             output_tokens=call.completion_tokens,
-            cost_usd=_hosted_cost(call.prompt_tokens, call.completion_tokens, self.price_per_mtok),
+            cached_input_tokens=call.cached_tokens,
+            reasoning_tokens=call.reasoning_tokens,
+            cost_usd=self.pricing.cost(
+                call.prompt_tokens, call.completion_tokens, call.cached_tokens
+            ),
             cost_estimated=True,
             latency_ms=call.latency_ms,
             calls=1,
             error=error,
         )
+
+
+class FrontierBackend(GenJsonBackend):
+    """``gen-json`` against a hosted frontier model, at list price. Only the JSON shape exists
+    here: hosted reasoning models do not return ``logprobs``, so there is no ``frontier-logprob``.
+    """
+
+    name = "frontier"
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        pricing: Pricing | None = None,
+        transport=None,
+        reasoning_effort: str | None = None,
+    ):
+        client = frontier_chat_client(
+            settings, transport=transport, reasoning_effort=reasoning_effort
+        )
+        return cls(client, pricing=pricing or Pricing.frontier(settings))
 
 
 class GenLogprobBackend:
@@ -307,27 +525,26 @@ class GenLogprobBackend:
 
     name = "gen-logprob"
 
-    def __init__(self, client: _ChatClient, price_per_mtok: float = 0.0) -> None:
+    def __init__(self, client: _ChatClient, pricing: Pricing | None = None) -> None:
         self.client = client
-        self.price_per_mtok = price_per_mtok
+        self.pricing = pricing or Pricing()
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, price_per_mtok: float = 0.0, transport=None):
-        if not settings.llm_base_url:
-            return None
-        client = _ChatClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            api_key=settings.llm_api_key,
-            timeout_s=settings.timeout_s,
-            transport=transport,
-        )
-        return cls(client, price_per_mtok=price_per_mtok)
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        pricing: Pricing | None = None,
+        transport=None,
+        reasoning_effort: str | None = None,
+    ):
+        client = local_chat_client(settings, transport=transport, reasoning_effort=reasoning_effort)
+        return None if client is None else cls(client, pricing=pricing)
 
     def decide(self, state: dict[str, str], questions: dict[str, Question]) -> DecisionResult:
         answers: dict[str, Answer] = {}
         errors: list[str] = []
-        prompt_tokens = completion_tokens = 0
+        prompt_tokens = completion_tokens = cached_tokens = 0
         latency_ms = 0.0
         for qid, q in questions.items():
             tokens = candidate_tokens(q)
@@ -343,6 +560,7 @@ class GenLogprobBackend:
             latency_ms += call.latency_ms
             prompt_tokens += call.prompt_tokens or 0
             completion_tokens += call.completion_tokens or 0
+            cached_tokens += call.cached_tokens or 0
             if call.error or call.top_logprobs is None:
                 answers[qid] = Answer(type=_qtype(q), error=call.error or "no logprobs in response")
                 errors.append(f"{qid}: {answers[qid].error}")
@@ -356,7 +574,8 @@ class GenLogprobBackend:
             model=self.client.model,
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
-            cost_usd=_hosted_cost(prompt_tokens, completion_tokens, self.price_per_mtok),
+            cached_input_tokens=cached_tokens,
+            cost_usd=self.pricing.cost(prompt_tokens, completion_tokens, cached_tokens),
             cost_estimated=True,
             latency_ms=latency_ms,
             calls=len(questions),
@@ -383,14 +602,6 @@ def _extract_token_probs(top_logprobs: list[dict], tokens: dict[str, str]) -> di
     return {k: v / total for k, v in mass.items()}
 
 
-def _hosted_cost(
-    prompt_tokens: int | None, completion_tokens: int | None, price_per_mtok: float
-) -> float:
-    if not price_per_mtok:
-        return 0.0
-    return ((prompt_tokens or 0) + (completion_tokens or 0)) * price_per_mtok / 1_000_000
-
-
 class MockGenerative:
     """Offline stand-in for both generative modes: no network, but the parsing and mapping code
     it exercises (``parse_json_object``, ``map_json_answer``, ``answer_from_token_probs``) is the
@@ -401,11 +612,11 @@ class MockGenerative:
     for eight questions vs. one constrained token each), not from a weaker scorer.
     """
 
-    def __init__(self, mode: str = "json", price_per_mtok: float = 0.0) -> None:
+    def __init__(self, mode: str = "json", pricing: Pricing | None = None) -> None:
         if mode not in ("json", "logprob"):
             raise ValueError(mode)
         self.mode = mode
-        self.price_per_mtok = price_per_mtok
+        self.pricing = pricing or Pricing()
         self.name = f"mock-gen-{mode}"
         self._jev = MockJev()
 
@@ -454,9 +665,7 @@ class MockGenerative:
             model="mock-gen-json-0",
             input_tokens=jev_result.input_tokens,
             output_tokens=len(questions) * 12,
-            cost_usd=_hosted_cost(
-                jev_result.input_tokens, len(questions) * 12, self.price_per_mtok
-            ),
+            cost_usd=self.pricing.cost(jev_result.input_tokens, len(questions) * 12, 0),
             cost_estimated=True,
             latency_ms=(time.perf_counter() - t0) * 1000,
             calls=1,
@@ -479,7 +688,7 @@ class MockGenerative:
             model="mock-gen-logprob-0",
             input_tokens=input_tokens,
             output_tokens=n,
-            cost_usd=_hosted_cost(input_tokens, n, self.price_per_mtok),
+            cost_usd=self.pricing.cost(input_tokens, n, 0),
             cost_estimated=True,
             latency_ms=(time.perf_counter() - t0) * 1000,
             calls=n,

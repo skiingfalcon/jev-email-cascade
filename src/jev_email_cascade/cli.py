@@ -10,11 +10,17 @@ from rich.console import Console
 
 from jev_email_cascade.config import get_settings
 from jev_email_cascade.jev_client import JEV_PRICE_PER_INPUT_TOKEN
-from jev_email_cascade.pipeline import BACKEND_NAMES
+from jev_email_cascade.pipeline import BACKEND_NAMES, REASONING_EFFORTS
 from jev_email_cascade.pipeline import run as run_pipeline
 from jev_email_cascade.questions import questions_json
 from jev_email_cascade.report import compare as compare_runs
-from jev_email_cascade.report import compute_metrics, load_run, render_markdown, render_rich
+from jev_email_cascade.report import (
+    compare_markdown,
+    compute_metrics,
+    load_run,
+    render_markdown,
+    render_rich,
+)
 
 app = typer.Typer(
     name="cascade", help="Prove the Jev decision-model cascade end to end.", no_args_is_help=True
@@ -53,13 +59,26 @@ def run_cmd(
     gen_price_per_mtok: float = typer.Option(
         0.0,
         "--gen-price-per-mtok",
-        help="Hosted-equivalent $/M tokens for the generative backends' cost estimate "
-        "(local gpt-oss is $0 marginal; this answers 'what would this cost through an API')",
+        help="Hosted-equivalent $/M tokens for the local generative backends' cost estimate "
+        "(local gpt-oss is $0 marginal; this answers 'what would this cost through an API'). "
+        "The frontier backend always uses its configured list prices.",
+    ),
+    reasoning_effort: str | None = typer.Option(
+        None,
+        "--reasoning-effort",
+        help=f"One of {', '.join(REASONING_EFFORTS)}; default = the provider's own default. "
+        "Sent top-level to the frontier model, via chat_template_kwargs to llama-server.",
     ),
 ) -> None:
     """Run one backend over the email set and write runs/<stamp>/."""
     if backend not in BACKEND_NAMES:
         err.print(f"[red]unknown backend[/red] {backend!r}; choose from {', '.join(BACKEND_NAMES)}")
+        raise typer.Exit(2)
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        err.print(
+            f"[red]bad --reasoning-effort[/red] {reasoning_effort!r}; "
+            f"choose from {', '.join(REASONING_EFFORTS)}"
+        )
         raise typer.Exit(2)
     settings = get_settings()
     try:
@@ -71,6 +90,7 @@ def run_cmd(
             parallel=parallel,
             use_llm=llm,
             price_per_mtok=gen_price_per_mtok,
+            reasoning_effort=reasoning_effort,
         )
     except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not a crash
         err.print(f"[red]error[/red] {exc}")
@@ -99,8 +119,14 @@ def report_cmd(
 @app.command(name="compare")
 def compare_cmd(
     run_dirs: list[Path] = typer.Argument(..., help="Two or more runs/<stamp> directories"),
+    markdown: bool = typer.Option(
+        False, "--markdown", help="Print as a Markdown table instead of a rich table"
+    ),
 ) -> None:
-    compare_runs(run_dirs, out)
+    if markdown:
+        print(compare_markdown(run_dirs))  # plain print: see report_cmd
+    else:
+        compare_runs(run_dirs, out)
 
 
 @app.command(name="questions")

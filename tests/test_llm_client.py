@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from jev_email_cascade.config import Settings
+from jev_email_cascade.generative import MissingFrontierKeyError
 from jev_email_cascade.llm_client import LlmClient, _parse_json_object
 from jev_email_cascade.policy import Decision, Route
 
@@ -120,3 +122,94 @@ def test_parse_json_object_finds_embedded_object() -> None:
 
 def test_parse_json_object_none_on_garbage() -> None:
     assert _parse_json_object("no object here") is None
+
+
+# --- LLM_PROVIDER=frontier ----------------------------------------------------------------------
+
+
+def test_from_settings_frontier_provider_builds_openai_profile_client() -> None:
+    settings = Settings(
+        llm_provider="frontier",
+        openai_api_key="sk-test",
+        frontier_model="gpt-5.6-terra",
+        llm_base_url=None,  # the local URL is irrelevant to the frontier provider
+    )
+    client = LlmClient.from_settings(settings, reasoning_effort="low")
+    assert client is not None
+    assert client.provider == "frontier"
+    assert client.profile == "openai"
+    assert client.model == "gpt-5.6-terra"
+    assert client.base_url == "https://api.openai.com/v1"
+    assert client.pricing.input == 2.0
+
+
+def test_from_settings_frontier_provider_without_key_raises() -> None:
+    with pytest.raises(MissingFrontierKeyError):
+        LlmClient.from_settings(Settings(llm_provider="frontier", openai_api_key=None))
+
+
+def test_from_settings_unknown_provider_rejected() -> None:
+    with pytest.raises(ValueError, match="LLM_PROVIDER"):
+        LlmClient.from_settings(Settings(llm_provider="anthropic"))
+
+
+def test_frontier_triage_body_health_path_and_cost() -> None:
+    seen = []
+    payload = {"category": "billing", "priority": 2, "rationale": "r", "summary": "s"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "gpt-5.6-terra"})
+        body = json.loads(request.content)
+        assert body["max_completion_tokens"] == LlmClient.max_tokens_by_profile["openai"]
+        assert "temperature" not in body and "max_tokens" not in body
+        assert body["reasoning_effort"] == "high"
+        assert body["response_format"] == {"type": "json_object"}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps(payload)}}],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 500,
+                    "completion_tokens_details": {"reasoning_tokens": 420},
+                },
+            },
+        )
+
+    settings = Settings(llm_provider="frontier", openai_api_key="sk-test")
+    client = LlmClient.from_settings(
+        settings, transport=httpx.MockTransport(handler), reasoning_effort="high"
+    )
+    assert client is not None
+    assert client.healthy() is True
+    result = client.triage({"subject": "s"}, _decision())
+
+    assert seen[0] == ("GET", "/v1/models/gpt-5.6-terra")
+    assert result.ok
+    assert result.category == "billing"
+    assert result.reasoning_tokens == 420
+    assert result.cost_usd == pytest.approx((1000 * 2.0 + 500 * 12.0) / 1e6)
+    assert result.as_dict()["cost_usd"] == result.cost_usd
+
+
+def test_local_triage_cost_is_zero_and_body_unchanged() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["temperature"] == 0 and body["max_tokens"] == 400
+        assert "reasoning_effort" not in body
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps({"category": "hr"})}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    client = LlmClient.from_settings(
+        Settings(llm_base_url="http://127.0.0.1:8082/v1"), transport=httpx.MockTransport(handler)
+    )
+    assert client is not None and client.provider == "local"
+    result = client.triage({}, _decision())
+    assert result.ok and result.cost_usd == 0.0 and result.reasoning_tokens is None

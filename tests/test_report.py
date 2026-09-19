@@ -5,7 +5,13 @@ from pathlib import Path
 
 from rich.console import Console
 
-from jev_email_cascade.report import compare, compute_metrics, load_run, render_markdown
+from jev_email_cascade.report import (
+    compare,
+    compare_markdown,
+    compute_metrics,
+    load_run,
+    render_markdown,
+)
 
 
 def _write_run(run_dir: Path, *, backend: str, rows: list[dict]) -> None:
@@ -131,6 +137,34 @@ def test_compare_runs_no_crash(tmp_path: Path) -> None:
     text = console.export_text()
     assert "mock-jev" in text
     assert "gen-json" in text
+
+
+def test_compare_markdown_one_line_per_run_with_tokens_and_hook_cost(tmp_path: Path) -> None:
+    rows = [_row("billing", "billing", 0, 0.0) for _ in range(6)]
+    d1 = tmp_path / "runs" / "jev"
+    d2 = tmp_path / "runs" / "frontier"
+    _write_run(d1, backend="jev", rows=rows)
+    _write_run(d2, backend="frontier", rows=rows)
+    run_json = json.loads((d2 / "run.json").read_text())
+    run_json.update(
+        {
+            "model": "gpt-5.6-terra",
+            "input_tokens": 67120,
+            "output_tokens": 18004,
+            "reasoning_tokens": 12300,
+            "llm_cost_usd": 0.05,
+        }
+    )
+    (d2 / "run.json").write_text(json.dumps(run_json))
+
+    text = compare_markdown([d1, d2])
+    lines = text.splitlines()
+    assert len(lines) == 4  # header, separator, two runs
+    assert lines[0].startswith("| run | backend | model |")
+    assert "| jev | m |" in lines[2] and "| - |" in lines[2]  # no token counts recorded
+    assert "| frontier | gpt-5.6-terra |" in lines[3]
+    assert "67,120 / 18,004 (12,300)" in lines[3]
+    assert "| 0.05 |" in lines[3]
 
 
 def test_render_markdown_includes_confusion_and_calibration(tmp_path: Path) -> None:

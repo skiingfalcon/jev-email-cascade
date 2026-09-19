@@ -6,7 +6,8 @@ text and a set of typed questions and returns typed answers with calibrated prob
 prose, no parsing layer. This project runs that cascade end to end against 74 synthetic,
 labelled business emails, scores it, and — because the natural question is "why not just ask a
 chat model the same questions" — runs that comparison too, on the same data, through the same
-report.
+report: against a local gpt-oss-120b **and** against a hosted frontier model (OpenAI
+`gpt-5.6-terra`), so the accuracy-per-dollar row everyone actually wants is in the same table.
 
 ## Architecture
 
@@ -18,18 +19,20 @@ flowchart TD
     C -->|jev| D1["JevClient<br/>1 call, native calibrated<br/>probabilities per question"]
     C -->|gen-json| D2["GenJsonBackend<br/>1 call, 1 JSON object,<br/>self-reported confidence"]
     C -->|gen-logprob| D3["GenLogprobBackend<br/>8 calls, 1 constrained token each,<br/>probability from top_logprobs"]
+    C -->|frontier| D5["FrontierBackend<br/>gen-json shape on gpt-5.6-terra,<br/>list-price cost, reasoning tokens"]
     C -->|mock-jev / mock-gen| D4["MockJev / MockGenerative<br/>offline, no network,<br/>same Answer schema"]
 
     D1 --> E["Answer schema<br/>noul / choice / score + probabilities"]
     D2 --> E
     D3 --> E
+    D5 --> E
     D4 --> E
 
     E --> F["policy.decide()<br/>thresholds -> category, priority, flags<br/>0.5 = cannot tell, never rounded"]
     F --> G{route}
     G -->|auto| H1["done<br/>nothing more happens"]
     G -->|review| H2["human review queue<br/>decision + evidence attached"]
-    G -->|llm| H3["LlmClient<br/>drafts category / priority /<br/>summary / entities JSON"]
+    G -->|llm| H3["LlmClient<br/>LLM_PROVIDER=local or frontier<br/>drafts category / priority /<br/>summary / entities JSON"]
     H3 --> H2
 
     H1 --> I["runs/STAMP/<br/>run.json + results.jsonl"]
@@ -38,6 +41,9 @@ flowchart TD
 
     subgraph Cloud["Hosted: OpenRouter or TypeSafe direct"]
         D1
+    end
+    subgraph OpenAI["Hosted: api.openai.com (OPENAI_API_KEY)"]
+        D5
     end
     subgraph Loopback["Local: llama-cpp-spark's local-llm serve, same Spark, 127.0.0.1"]
         D2
@@ -48,8 +54,9 @@ flowchart TD
 
 Nothing in this project builds or launches a model server. `D2`, `D3`, and `H3` are plain HTTP
 clients (`httpx`) pointed at `LLM_BASE_URL` — `llama-cpp-spark`'s `local-llm serve` already opened
-that port before this ever runs. `D1` is the only node that leaves the box, and only Jev's typed
-questions and the prepared email text cross that boundary, never a raw customer inbox dump.
+that port before this ever runs. `D1` and `D5` are the nodes that leave the box (and `H3` too when
+`LLM_PROVIDER=frontier`); only the typed questions and the prepared email text cross that
+boundary, never a raw customer inbox dump.
 
 ## What this proves
 
@@ -60,6 +67,8 @@ email --> prepare (strip quoted history/signature, cap length)
               - gen-json     a chat model: 1 call, 1 JSON object, self-reported confidence
               - gen-logprob  a chat model: 8 calls, 1 constrained token each, probability
                              read from the model's own top_logprobs
+              - frontier     gpt-5.6-terra (OpenAI): the gen-json shape at list price, the
+                             reference row -- hosted reasoning models refuse logprobs
        --> POLICY: thresholds in plain Python decide auto / review / llm
               - a Noul at 0.5 means "cannot tell", not "somewhat" -- never rounded
               - a Score with confidence 0.0 is a flat distribution -- never acted on
@@ -124,25 +133,51 @@ uv run cascade run --backend gen-logprob --limit 5 # gpt-oss-120b, 8 constrained
 Without `LLM_BASE_URL` set, `--llm` degrades cleanly: escalations are queued for `review` instead
 of calling anything, and the run still completes.
 
+### Running the frontier comparison (OpenAI `gpt-5.6-terra`)
+
+```bash
+# .env: OPENAI_API_KEY=sk-...   (same variable llama-cpp-spark reads; one .env serves both)
+uv run cascade run --backend frontier --limit 1        # preflight GET /models/gpt-5.6-terra, 1 call
+uv run cascade run --backend frontier                  # all 74, ~$0.35 at list price
+uv run cascade run --backend frontier --reasoning-effort low   # override the provider default
+uv run cascade compare runs/<jev> runs/<frontier> runs/<gen-json> --markdown
+```
+
+`frontier` is `gen-json` pointed at a hosted reasoning model, with the request conventions that
+API needs (`max_completion_tokens`, no `temperature`, top-level `reasoning_effort`, retries on
+429/5xx honouring `Retry-After`) and `usage.completion_tokens_details.reasoning_tokens` recorded
+per email. There is no `frontier-logprob`: the model returns no `logprobs`, and the client
+refuses the request up front rather than paying for a call that cannot answer the question. Cost
+is list-price arithmetic from token counts (`FRONTIER_PRICE_*_PER_MTOK`, recorded into
+`run.json` as `pricing`), because the API reports tokens, not dollars.
+
+The escalation hook can run on the same model — `LLM_PROVIDER=frontier uv run cascade run
+--backend jev --llm` — so "Jev + gpt-oss" and "Jev + Terra" on exactly the escalated band are one
+`compare` apart (`llm hook $` column, `llm_cost_usd` / `llm_reasoning_tokens` in `run.json`).
+
 ## Jev vs a generative model, on the same questions
 
-This is the comparison the project exists to run, not just Jev's own accuracy. Three backends
+This is the comparison the project exists to run, not just Jev's own accuracy. Four backends
 answer the identical 8-question contract (`src/jev_email_cascade/questions.py`) about the
 identical emails:
 
 | | calls / email | probability source | cost driver |
 | --- | --- | --- | --- |
 | `jev` | 1 | native, calibrated | $0.042 / M input tokens, output free |
-| `gen-json` | 1 | self-reported `"confidence"` in the JSON it returns | your hosted price |
+| `gen-json` | 1 | self-reported `"confidence"` in the JSON it returns | your hosted price (local gpt-oss: $0 marginal) |
 | `gen-logprob` | 8 (one per question) | the model's own `top_logprobs` on a forced single token | 8x the prompt tokens |
+| `frontier` | 1 | self-reported `"confidence"` (no `logprobs` offered) | $2 / M in, $12 / M out incl. hidden reasoning tokens |
 
-Run all three (mock or live) and compare:
+Run them (mock or live) and compare:
 
 ```bash
 uv run cascade run --backend mock-jev
 uv run cascade run --backend mock-gen                # gen-json shape, offline
-uv run cascade compare runs/<jev-stamp> runs/<gen-stamp>
+uv run cascade compare runs/<jev-stamp> runs/<gen-stamp> [runs/<frontier-stamp>] [--markdown]
 ```
+
+`compare` puts accuracy, calls per email, tokens in / out (reasoning), total and per-1K cost, the
+escalation hook's cost, latency and errors side by side, one row per run.
 
 `cascade report --markdown` on each run also shows, per Noul question, the **raw accuracy**
 (threshold at 0.5), the **acted accuracy** (only the items confident enough for the policy to act
@@ -204,11 +239,18 @@ changing a question costs the same again — that reversibility, not the per-cal
 actual pitch: tag for today's questions, retag when the business changes, instead of trying to
 predict every question up front.
 
+The same 74 emails through `gpt-5.6-terra` at list price ($2 / M input, $12 / M output, the
+reasoning tokens billed as output): roughly 67K input + ~18K output ≈ **$0.35**, about 90x Jev,
+before any escalation-hook calls. The `frontier` run's `run.json` records the exact token counts
+and the prices used, so the ratio in your report is measured, not this estimate.
+
 ## Data-hosting caveat
 
 Jev is a hosted API with, as of this writing, no on-prem or open-weight option — every call
-round-trips to a US-hosted service run by one vendor. That's a fine trade for synthetic or public
-data; for real customer email it's a compliance decision first. If the answer is no, the cascade's
+round-trips to a US-hosted service run by one vendor. The `frontier` backend (and the hook with
+`LLM_PROVIDER=frontier`) sends the same prepared email text to OpenAI — the same egress class,
+a different vendor. That's a fine trade for synthetic or public data; for real customer email it's
+a compliance decision first. If the answer is no, the cascade's
 shape doesn't change: `src/jev_email_cascade/backends.py` defines the `DecisionBackend` protocol
 every backend implements, so a local decision model — a small model on your own hardware answering
 the same typed questions with constrained output — plugs into the exact same policy, LLM hook, and
@@ -236,8 +278,10 @@ report that `MockJev` exercises today. `MockJev` is that seam, not just a test f
 ## How to read a run
 
 `runs/<stamp>/run.json`: backend, model (as reported by the response, not requested), thresholds
-questions were hashed against, total cost, cost per 1K emails, calls per email, latency p50/p95,
-route counts, error count. `runs/<stamp>/results.jsonl`: one row per email — labels, every raw
+questions were hashed against, total cost, cost per 1K emails, calls per email, token totals
+(input / output / cached / reasoning), the `pricing` triple and `reasoning_effort` a hosted run
+used, latency p50/p95, the escalation hook's provider / model / calls / cost, route counts, error
+count. `runs/<stamp>/results.jsonl`: one row per email — labels, every raw
 answer, the policy's decision (category/priority/flags/route), and the LLM's output when called.
 `uv run cascade report runs/<stamp>` turns that into the accuracy/calibration/confusion tables
 above; `--markdown` prints the same thing as a pasteable table.
@@ -253,9 +297,10 @@ src/jev_email_cascade/
   backends.py                  the shared Answer schema and DecisionBackend protocol
   jev_client.py                Jev via OpenRouter or TypeSafe direct
   mock_jev.py                  offline stand-in for Jev; also the seam for a local decision model
-  generative.py                gen-json / gen-logprob backends, plus MockGenerative
+  generative.py                gen-json / gen-logprob / frontier backends, the shared chat client
+                               (local vs openai request profiles, retries, Pricing), MockGenerative
   policy.py                    thresholds -> auto / review / llm
-  llm_client.py                the optional generative hook (e.g. gpt-oss-120b)
+  llm_client.py                the optional generative hook (gpt-oss-120b, or Terra via LLM_PROVIDER)
   pipeline.py                  wires one backend to the email set, writes runs/<stamp>/
   report.py                    scores a run against labels; compares runs
   cli.py                       cascade demo | run | report | compare | questions | estimate
