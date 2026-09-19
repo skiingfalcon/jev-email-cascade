@@ -8,6 +8,49 @@ labelled business emails, scores it, and — because the natural question is "wh
 chat model the same questions" — runs that comparison too, on the same data, through the same
 report.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    A["email<br/>(sample data or a real inbox)"] --> B["prepare()<br/>strip quoted history / signature<br/>cap body at 6,000 chars"]
+    B --> C{"backend<br/>(--backend flag)"}
+
+    C -->|jev| D1["JevClient<br/>1 call, native calibrated<br/>probabilities per question"]
+    C -->|gen-json| D2["GenJsonBackend<br/>1 call, 1 JSON object,<br/>self-reported confidence"]
+    C -->|gen-logprob| D3["GenLogprobBackend<br/>8 calls, 1 constrained token each,<br/>probability from top_logprobs"]
+    C -->|mock-jev / mock-gen| D4["MockJev / MockGenerative<br/>offline, no network,<br/>same Answer schema"]
+
+    D1 --> E["Answer schema<br/>noul / choice / score + probabilities"]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+
+    E --> F["policy.decide()<br/>thresholds -> category, priority, flags<br/>0.5 = cannot tell, never rounded"]
+    F --> G{route}
+    G -->|auto| H1["done<br/>nothing more happens"]
+    G -->|review| H2["human review queue<br/>decision + evidence attached"]
+    G -->|llm| H3["LlmClient<br/>drafts category / priority /<br/>summary / entities JSON"]
+    H3 --> H2
+
+    H1 --> I["runs/STAMP/<br/>run.json + results.jsonl"]
+    H2 --> I
+    I --> J["report.py<br/>accuracy, calibration, confusion,<br/>routes, cost, latency vs. labels"]
+
+    subgraph Cloud["Hosted: OpenRouter or TypeSafe direct"]
+        D1
+    end
+    subgraph Loopback["Local: llama-cpp-spark's local-llm serve, same Spark, 127.0.0.1"]
+        D2
+        D3
+        H3
+    end
+```
+
+Nothing in this project builds or launches a model server. `D2`, `D3`, and `H3` are plain HTTP
+clients (`httpx`) pointed at `LLM_BASE_URL` — `llama-cpp-spark`'s `local-llm serve` already opened
+that port before this ever runs. `D1` is the only node that leaves the box, and only Jev's typed
+questions and the prepared email text cross that boundary, never a raw customer inbox dump.
+
 ## What this proves
 
 ```
@@ -57,15 +100,20 @@ uv run cascade run --backend jev               # the full 74 emails, well under 
 uv run cascade report runs/<the-new-stamp>
 ```
 
-### Pointing the LLM hook and the generative backends at the Spark
+### Pointing the LLM hook and the generative backends at a served model
 
-Set `LLM_BASE_URL` in `.env` to any OpenAI-compatible `/v1` endpoint, e.g. this repo's sibling
-project's `gpt-oss-120b` on the DGX Spark:
+This project is meant to run on the same DGX Spark that
+[`llama-cpp-spark`](https://github.com/skiingfalcon/llama-cpp-spark) serves models on, so once
+`uv run local-llm serve gpt-oss-120b` is running there, `LLM_BASE_URL` is loopback — no llama.cpp
+build in this repo, no network hop, just an HTTP client pointed at the port that command opened:
 
 ```bash
-LLM_BASE_URL=http://<spark-host>:8082/v1
+LLM_BASE_URL=http://127.0.0.1:8082/v1
 LLM_MODEL=gpt-oss-120b
 ```
+
+(Running this from a different machine than the one serving the model is the same idea with a
+real hostname instead of `127.0.0.1` — the client doesn't care either way.)
 
 ```bash
 uv run cascade run --backend jev --llm         # Jev decides; uncertain items go to gpt-oss-120b
