@@ -1,0 +1,36 @@
+{
+  "backend": "frontier",
+  "model": "gpt-5.6-terra",
+  "reasoning_effort": null,
+  "pricing": {
+    "input": 2.0,
+    "cached_input": 0.2,
+    "output": 12.0
+  },
+  "llm_provider": null,
+  "llm_model": null,
+  "started": "2026-09-19T18:44:27+00:00",
+  "finished": "2026-09-19T18:46:46+00:00",
+  "wall_s": 138.94,
+  "n": 74,
+  "cost_usd": 0.260104,
+  "cost_per_1k_emails": 3.5149,
+  "calls_per_email": 1.0,
+  "input_tokens": 71654,
+  "output_tokens": 9733,
+  "cached_input_tokens": 0,
+  "reasoning_tokens": 1451,
+  "latency_ms_p50": 1600.0464790013211,
+  "latency_ms_p95": 3705.0596688495702,
+  "llm_calls": 0,
+  "llm_cost_usd": null,
+  "llm_reasoning_tokens": null,
+  "llm_latency_ms_p50": null,
+  "llm_latency_ms_p95": null,
+  "route_counts": {
+    "review": 48,
+    "auto": 26
+  },
+  "error_count": 0,
+  "questions_hash": "c42ad7fa4e89"
+}
