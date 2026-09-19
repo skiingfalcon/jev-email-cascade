@@ -156,6 +156,7 @@ def compute_metrics(run_json: dict, rows: list[dict]) -> dict:
         "reasoning_tokens": run_json.get("reasoning_tokens"),
         "reasoning_effort": run_json.get("reasoning_effort"),
         "pricing": run_json.get("pricing"),
+        "backend_info": run_json.get("backend_info"),
         "llm_provider": run_json.get("llm_provider"),
         "llm_model": run_json.get("llm_model"),
         "llm_calls": run_json.get("llm_calls"),
@@ -358,6 +359,15 @@ COMPARE_COLUMNS = (
 )
 
 
+def _model_text(m: dict) -> str:
+    text = str(m["model"])
+    device = (m.get("backend_info") or {}).get("device")
+    if device:
+        gpu_name = (m.get("backend_info") or {}).get("gpu_name")
+        text += f" @ {gpu_name or device}"
+    return text
+
+
 def _compare_row(run_dir: Path, m: dict) -> list[str]:
     if m.get("input_tokens") is not None or m.get("output_tokens") is not None:
         tokens = f"{m['input_tokens'] or 0:,} / {m['output_tokens'] or 0:,}"
@@ -368,7 +378,7 @@ def _compare_row(run_dir: Path, m: dict) -> list[str]:
     return [
         run_dir.name,
         str(m["backend"]),
-        str(m["model"]),
+        _model_text(m),
         _fmt(m["category"]["accuracy"]),
         f"{_fmt(m['priority']['exact'])} / {_fmt(m['priority']['within1'])}",
         _fmt(m["calls_per_email"]),

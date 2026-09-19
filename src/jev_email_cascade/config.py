@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     frontier_price_cached_input_per_mtok: float = 0.20
     frontier_price_output_per_mtok: float = 12.0
 
+    # Open-weight, self-hosted decision-model backend (--backend gliner). $0 marginal cost;
+    # `uv sync --extra gliner` first (pulls torch). See src/jev_email_cascade/gliner_backend.py.
+    gliner_model: str = "fastino/gliner2.5-multi-v1"
+    gliner_device: str = "cpu"  # "cpu" | "cuda" | "mps"
+    gliner_fp16: bool = False
+
     runs_dir: Path = Path("runs")
     timeout_s: float = 60.0
 

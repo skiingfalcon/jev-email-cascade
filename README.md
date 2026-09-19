@@ -20,12 +20,14 @@ flowchart TD
     C -->|gen-json| D2["GenJsonBackend<br/>1 call, 1 JSON object,<br/>self-reported confidence"]
     C -->|gen-logprob| D3["GenLogprobBackend<br/>8 calls, 1 constrained token each,<br/>probability from top_logprobs"]
     C -->|frontier| D5["FrontierBackend<br/>gen-json shape on gpt-5.6-terra,<br/>list-price cost, reasoning tokens"]
+    C -->|gliner| D6["GlinerBackend<br/>GLiNER2.5 encoder, 1 forward pass,<br/>$0 marginal, self-hosted"]
     C -->|mock-jev / mock-gen| D4["MockJev / MockGenerative<br/>offline, no network,<br/>same Answer schema"]
 
     D1 --> E["Answer schema<br/>noul / choice / score + probabilities"]
     D2 --> E
     D3 --> E
     D5 --> E
+    D6 --> E
     D4 --> E
 
     E --> F["policy.decide()<br/>thresholds -> category, priority, flags<br/>0.5 = cannot tell, never rounded"]
@@ -50,6 +52,9 @@ flowchart TD
         D3
         H3
     end
+    subgraph OnPrem["Self-hosted: GLiNER2.5 weights loaded in-process, no network"]
+        D6
+    end
 ```
 
 Nothing in this project builds or launches a model server. `D2`, `D3`, and `H3` are plain HTTP
@@ -69,6 +74,8 @@ email --> prepare (strip quoted history/signature, cap length)
                              read from the model's own top_logprobs
               - frontier     gpt-5.6-terra (OpenAI): the gen-json shape at list price, the
                              reference row -- hosted reasoning models refuse logprobs
+              - gliner       GLiNER2.5 (open-weight, self-hosted): a bidirectional encoder
+                             answering all 8 questions in one forward pass, $0 marginal
        --> POLICY: thresholds in plain Python decide auto / review / llm
               - a Noul at 0.5 means "cannot tell", not "somewhat" -- never rounded
               - a Score with confidence 0.0 is a flat distribution -- never acted on
@@ -155,9 +162,41 @@ The escalation hook can run on the same model — `LLM_PROVIDER=frontier uv run 
 --backend jev --llm` — so "Jev + gpt-oss" and "Jev + Terra" on exactly the escalated band are one
 `compare` apart (`llm hook $` column, `llm_cost_usd` / `llm_reasoning_tokens` in `run.json`).
 
+### Running the open-weight comparison (GLiNER2.5, self-hosted, $0 marginal)
+
+[`fastino/gliner2.5-multi-v1`](https://huggingface.co/fastino/gliner2.5-multi-v1) is the
+legitimate free/open-weight comparison, not a strawman: it is the same *class* of model as
+Jev — a bidirectional encoder that takes text and a schema of typed labels and returns labels
+with scores in one forward pass, no generation, no output parsing — except Apache-2.0 licensed
+(287M params, mDeBERTa-v3-base encoder) and self-hosted at $0 marginal cost. It is the local
+decision model the data-hosting caveat below points at.
+
+```bash
+uv sync --extra gliner                          # pulls torch, ~2 GB; not in the default install
+uv run cascade run --backend gliner --limit 3   # sanity check on CPU
+uv run cascade run --backend gliner             # all 74 emails
+uv run cascade compare runs/<jev> runs/<gliner> --markdown
+```
+
+On the Spark, `GLINER_DEVICE=cuda GLINER_FP16=1 uv run cascade run --backend gliner` for the GPU
+latency row; `scripts/spark-gliner-run.sh` runs the smoke test, the full run, and commits
+`runs/<stamp>/` in one step (no API key of any kind — the weights are pulled once, anonymously,
+from Hugging Face, then everything is offline).
+
+`questions.py` maps onto GLiNER2's schema directly: `category` and `priority` become single-label
+classification tasks over their existing option/level text; each Noul becomes a `true`/`false`
+task with the instruction sentence folded into both labels' descriptions, since GLiNER has no
+separate slot for free-text scope or negation the way Jev's `instructions` field does. GLiNER2's
+API also only exposes the *winning* label's confidence, not the full distribution; for the 2-way
+Noul tasks that's no loss (`P(false) = 1 - P(true)` is exact), but for the 8-way category and
+4-way priority tasks the rest of the distribution is reconstructed by spreading the remaining
+mass uniformly — an honest placeholder, not a measurement. Rows where this happened are flagged
+`probabilities_reconstructed: true` in `results.jsonl` so the report never mistakes it for a
+calibrated distribution the way it can for Jev's or `gen-logprob`'s.
+
 ## Jev vs a generative model, on the same questions
 
-This is the comparison the project exists to run, not just Jev's own accuracy. Four backends
+This is the comparison the project exists to run, not just Jev's own accuracy. Five backends
 answer the identical 8-question contract (`src/jev_email_cascade/questions.py`) about the
 identical emails:
 
@@ -167,6 +206,7 @@ identical emails:
 | `gen-json` | 1 | self-reported `"confidence"` in the JSON it returns | your hosted price (local gpt-oss: $0 marginal) |
 | `gen-logprob` | 8 (one per question) | the model's own `top_logprobs` on a forced single token | 8x the prompt tokens |
 | `frontier` | 1 | self-reported `"confidence"` (no `logprobs` offered) | $2 / M in, $12 / M out incl. hidden reasoning tokens |
+| `gliner` | 1 | native classification score per label (softmax), same class of model as Jev | $0 marginal, self-hosted |
 
 Run them (mock or live) and compare:
 
@@ -254,7 +294,8 @@ a compliance decision first. If the answer is no, the cascade's
 shape doesn't change: `src/jev_email_cascade/backends.py` defines the `DecisionBackend` protocol
 every backend implements, so a local decision model — a small model on your own hardware answering
 the same typed questions with constrained output — plugs into the exact same policy, LLM hook, and
-report that `MockJev` exercises today. `MockJev` is that seam, not just a test fixture.
+report that `MockJev` exercises today. `--backend gliner` (above) is that seam filled in for
+real, not just a test fixture: nothing leaves the box, and the run's cost is $0 by construction.
 
 ## Gotchas (from TypeSafe's own docs and from running this)
 
@@ -299,6 +340,7 @@ src/jev_email_cascade/
   mock_jev.py                  offline stand-in for Jev; also the seam for a local decision model
   generative.py                gen-json / gen-logprob / frontier backends, the shared chat client
                                (local vs openai request profiles, retries, Pricing), MockGenerative
+  gliner_backend.py            GLiNER2.5 backend: derives a schema from questions.py, $0 marginal
   policy.py                    thresholds -> auto / review / llm
   llm_client.py                the optional generative hook (gpt-oss-120b, or Terra via LLM_PROVIDER)
   pipeline.py                  wires one backend to the email set, writes runs/<stamp>/

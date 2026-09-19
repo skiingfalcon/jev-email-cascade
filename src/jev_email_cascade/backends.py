@@ -59,6 +59,10 @@ class DecisionResult:
     # Generative backends only; Jev has neither.
     cached_input_tokens: int | None = None
     reasoning_tokens: int | None = None
+    # True when a backend only exposed the winning label's probability and the rest of the
+    # distribution was reconstructed by spreading the remaining mass uniformly (exact for a
+    # 2-way Noul; an approximation for wider Choice/Score tasks). See gliner_backend.py.
+    probabilities_reconstructed: bool = False
 
     @property
     def ok(self) -> bool:
@@ -75,6 +79,7 @@ class DecisionResult:
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "probabilities_reconstructed": self.probabilities_reconstructed,
             "cost_usd": self.cost_usd,
             "cost_estimated": self.cost_estimated,
             "latency_ms": self.latency_ms,

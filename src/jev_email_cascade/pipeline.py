@@ -21,6 +21,7 @@ from jev_email_cascade.generative import (
     MockGenerative,
     Pricing,
 )
+from jev_email_cascade.gliner_backend import GlinerBackend
 from jev_email_cascade.jev_client import JevClient
 from jev_email_cascade.llm_client import LlmClient
 from jev_email_cascade.mock_jev import MockJev
@@ -29,7 +30,7 @@ from jev_email_cascade.prepare import Prepared, load_emails, prepare
 from jev_email_cascade.questions import QUESTIONS, questions_json
 from jev_email_cascade.stats import percentile
 
-BACKEND_NAMES = ("jev", "mock-jev", "gen-json", "gen-logprob", "mock-gen", "frontier")
+BACKEND_NAMES = ("jev", "mock-jev", "gen-json", "gen-logprob", "mock-gen", "frontier", "gliner")
 REASONING_EFFORTS = ("low", "medium", "high")
 
 
@@ -67,12 +68,19 @@ def build_backend(
         return FrontierBackend.from_settings(
             settings, transport=transport, reasoning_effort=reasoning_effort
         )
+    if name == "gliner":
+        return GlinerBackend.from_settings(settings)
     raise ValueError(f"unknown backend {name!r}; choose from {BACKEND_NAMES}")
 
 
 def _backend_pricing(backend: DecisionBackend) -> dict | None:
     pricing = getattr(backend, "pricing", None)
     return pricing.as_dict() if isinstance(pricing, Pricing) and not pricing.zero else None
+
+
+def _backend_info(backend: DecisionBackend) -> dict | None:
+    info_fn = getattr(backend, "backend_info", None)
+    return info_fn() if callable(info_fn) else None
 
 
 def _preflight_frontier(backend: DecisionBackend) -> None:
@@ -171,6 +179,7 @@ def _summarise(
         "model": models[0] if len(models) == 1 else models,
         "reasoning_effort": reasoning_effort,
         "pricing": _backend_pricing(backend),
+        "backend_info": _backend_info(backend),
         "llm_provider": llm_client.provider if llm_available and llm_client else None,
         "llm_model": llm_client.model if llm_available and llm_client else None,
         "started": started.isoformat(timespec="seconds"),
