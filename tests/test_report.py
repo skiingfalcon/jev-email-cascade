@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from jev_email_cascade.report import compare, compute_metrics, load_run
+from jev_email_cascade.report import compare, compute_metrics, load_run, render_markdown
 
 
 def _write_run(run_dir: Path, *, backend: str, rows: list[dict]) -> None:
@@ -131,3 +131,21 @@ def test_compare_runs_no_crash(tmp_path: Path) -> None:
     text = console.export_text()
     assert "mock-jev" in text
     assert "gen-json" in text
+
+
+def test_render_markdown_includes_confusion_and_calibration(tmp_path: Path) -> None:
+    rows = [
+        _row("billing", "billing", 2, 2.0),
+        _row("support", "sales", 1, 1.0),
+    ]
+    run_dir = tmp_path / "runs" / "md"
+    _write_run(run_dir, backend="jev", rows=rows)
+    metrics = compute_metrics(*load_run(run_dir))
+    text = render_markdown(metrics, run_dir)
+
+    assert "category accuracy" in text
+    assert "Category confusion" in text
+    assert "| true \\ pred |" in text
+    assert "billing" in text and "support" in text and "sales" in text
+    assert "Noul calibration" in text
+    assert "awaiting_reply" in text

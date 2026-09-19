@@ -239,15 +239,41 @@ def render_markdown(metrics: dict, run_dir: Path) -> str:
         f"{_fmt(metrics['latency_ms_p95'])} ms",
         f"- errors: {metrics['error_count']}",
         "",
-        "| question | raw acc | acted acc (n) | mean conf on wrong |",
-        "| --- | ---: | ---: | ---: |",
+        "| question | raw acc | 95% CI | acted acc (n) | mean conf on wrong |",
+        "| --- | ---: | ---: | ---: | ---: |",
     ]
     for qid, m in metrics["nouls"].items():
         lines.append(
-            f"| {qid} | {_fmt(m['raw_accuracy'])} | "
+            f"| {qid} | {_fmt(m['raw_accuracy'])} | {ci_text_from(m['raw_ci'])} | "
             f"{_fmt(m['acted_accuracy'])} ({m['acted_n']}/{m['n']}) | "
             f"{_fmt(m['mean_confidence_on_wrong'])} |"
         )
+
+    cat = metrics["category"]
+    all_preds = sorted({p for row in cat["confusion"].values() for p in row})
+    lines += ["", "**Category confusion** (rows = true, cols = predicted)", ""]
+    lines.append("| true \\ pred | " + " | ".join(all_preds) + " |")
+    lines.append("| --- | " + " | ".join("---:" for _ in all_preds) + " |")
+    for true in sorted(cat["confusion"]):
+        row = cat["confusion"][true]
+        lines.append(f"| {true} | " + " | ".join(_fmt(row.get(p, 0)) for p in all_preds) + " |")
+
+    bands = list(next(iter(metrics["nouls"].values()))["calibration"]) if metrics["nouls"] else []
+    if bands:
+        lines += [
+            "",
+            "**Noul calibration** (observed positive rate by predicted-probability band)",
+            "",
+        ]
+        lines.append("| question | " + " | ".join(bands) + " |")
+        lines.append("| --- | " + " | ".join("---:" for _ in bands) + " |")
+        for qid, m in metrics["nouls"].items():
+            cells = [
+                f"{_fmt(m['calibration'][b]['positive_rate'])} (n={m['calibration'][b]['n']})"
+                for b in bands
+            ]
+            lines.append(f"| {qid} | " + " | ".join(cells) + " |")
+
     return "\n".join(lines)
 
 

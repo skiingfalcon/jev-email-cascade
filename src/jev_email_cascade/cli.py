@@ -88,7 +88,10 @@ def report_cmd(
 ) -> None:
     metrics = compute_metrics(*load_run(run_dir))
     if markdown:
-        out.print(render_markdown(metrics, run_dir))
+        # Plain print, not out.print(): Rich's Console soft-wraps long lines to the terminal
+        # width (or a fixed default when output isn't a TTY), which corrupts a wide Markdown
+        # table row into two lines. Markdown output must be byte-exact and pasteable.
+        print(render_markdown(metrics, run_dir))
     else:
         render_rich(metrics, run_dir, out)
 
