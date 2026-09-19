@@ -1,0 +1,22 @@
+{
+  "backend": "jev",
+  "model": "typesafe/jev-1.13-20260917",
+  "llm_model": null,
+  "started": "2026-09-19T13:12:18+00:00",
+  "finished": "2026-09-19T13:12:39+00:00",
+  "wall_s": 21.193,
+  "n": 74,
+  "cost_usd": 0.00398,
+  "cost_per_1k_emails": 0.0538,
+  "calls_per_email": 1.0,
+  "latency_ms_p50": 271.6446249996807,
+  "latency_ms_p95": 448.7563125003362,
+  "llm_latency_ms_p50": null,
+  "llm_latency_ms_p95": null,
+  "route_counts": {
+    "review": 70,
+    "auto": 4
+  },
+  "error_count": 0,
+  "questions_hash": "c42ad7fa4e89"
+}
