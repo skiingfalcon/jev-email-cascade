@@ -1,0 +1,36 @@
+[project]
+name = "jev-email-cascade"
+version = "0.1.0"
+description = "Proof: TypeSafe's Jev decides, code routes, a local generative model handles the rest"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.16.0",
+    "httpx>=0.28.0",
+    "rich>=14.0.0",
+    "pydantic-settings>=2.8.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.11.0",
+]
+
+[project.scripts]
+cascade = "jev_email_cascade.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.9.4,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # Typer Argument/Option defaults are the documented pattern
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
+.venv
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Run artifacts ARE evidence and are tracked; nothing here to ignore under runs/
