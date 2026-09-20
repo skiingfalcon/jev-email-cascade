@@ -37,8 +37,11 @@ $$\mathrm{Attention}(Q,K,V)=\mathrm{softmax}\left(\frac{QK^{T}+M}{\sqrt{d_k}}\ri
 
 $M$ is the mask. The **head** is what you read out.
 
+At inbox scale, $QK^{T}$ is a huge matrix multiply. That is why this runs on **GPUs**.
+
 <!--
 Walk the equation if the room wants it. Otherwise: mask decides who can look at whom; the head decides whether you get a word, a vector, or a probability.
+QK^T is sequence-length squared, per layer, per head. A laptop CPU can do a toy sentence. Thousands of emails, long bodies, many layers: dense linear algebra, hence a GPU (ours, or the hosted API's). Same equation for writers, readers, and Jev — Jev is cheaper because it does one pass, not one pass per output token.
 -->
 
 ---
@@ -59,25 +62,70 @@ You can strap a classification head on a decoder like Qwen. That is one forward 
 
 ---
 
-# Why writers are slow: the KV cache
+# The KV cache
 
-Every new token attends to every token before it.  
-The **KV cache** keeps those keys and values so each step only computes the newest token.
+Attention needs a **key** and a **value** for every token already seen.
 
-- **Writer** — one forward pass *per output token*, re-reading a cache that grows with the text
-- **Decider** — one forward pass. No steps, so nothing to cache.
+```
+prompt ── prefill (one pass) ──► write K,V into cache
+                                      │
+token   ── decode (one step) ──► read cache, append this token's K,V
+token   ── decode ────────────► read  …append
+token   ── decode ────────────► read  …append
+```
 
-| | generated tokens (74 emails) | p50 |
-| --- | ---: | ---: |
-| gpt-5.6-terra | 9,733 (1,451 hidden reasoning) | 1.6 s |
-| Jev | 0 | 272 ms |
-| GLiNER2.5 | 0 | 79 ms |
+Without the cache, every decode step recomputes K,V for the whole prefix.  
+A **reader / decider** has no next token: one pass, discard. Nothing to keep.
 
 <!--
-KV cache: for each layer, the K and V projections of every token seen so far are stored. Generating token n computes Q for token n only and attends over the stored K/V for 1..n-1. Without it, every step would recompute attention for the whole prefix -- quadratic. With it, each step is linear in the prefix, but the step is memory-bandwidth bound: it re-reads the whole cache plus the weights. That is why decode is slow per token and why context length costs memory, not just compute.
-Hidden reasoning tokens go through the same loop and are billed as output ($12/M for Terra). 1,451 of Terra's 9,733 generated tokens were reasoning we never saw.
-An encoder / decider does the whole sequence in one pass: all K and V computed once, used once, discarded. There is no "next step" to cache for. Its entire cost is one prefill, which is why 287M-parameter GLiNER2.5 answers in 79 ms.
-Prompt caching (OpenAI's cached_tokens, llama-server's slot/prompt cache) is KV-cache reuse across requests: keep the K/V of a shared prefix so the next request only prefills what changed. Our Terra run reused 0 cached tokens -- our prompt puts the email first and the eight questions after it, so consecutive requests share no prefix. Putting the fixed question block before the email is the fix if we ever care about Terra's bill; it is irrelevant to Jev, which has no cache to reuse.
+Generic concept. Prefill *fills* the cache; decode is *why* we keep it.
+
+Q = what am I looking for. K = what each earlier token is about. V = what to mix in if I attend there.
+
+Prefill: whole prompt in parallel. Write K,V for every prompt token. That is not "using a cache to go faster"; it is producing the cache.
+
+Decode: new token computes its own Q (and K,V). Attends over cached K,V. Appends. Repeat. Each step is O(prefix) instead of O(prefix²), but you re-read the whole cache from GPU memory — bandwidth-bound. Long context costs memory because the cache grows.
+
+Encoder / one-shot classifier: sequence is complete. One multiply, done.
+
+Prompt caching (reuse a shared prefix across requests) is the same K,V, different lifetime — not this slide.
+
+If asked why Terra was 1.6s and Jev 272ms: Terra generated ~10K tokens, each a decode step; Jev had no generation loop. Numbers live on the results slide.
+-->
+
+---
+
+# Decoder vs Jev
+
+```
+decoder                         Jev (decider)
+───────                         ────────────
+email  →  prefill  →  KV cache  email  →  one pass
+              │                              │
+         decode → token                 typed heads
+         decode → token                 Choice / Score / Noul
+         decode → …
+              ↓
+         JSON (maybe)
+```
+
+| | Decoder | Jev |
+| --- | --- | --- |
+| Steps | 1 + *every output token* | 1 |
+| KV cache | grows while it writes | none |
+| Output | words | probabilities |
+| Implication | slow, billed per token, can ramble | fast, no prose to parse, cannot draft |
+
+<!--
+Same attention equation. Different loop.
+
+Decoder: prefill the email (and the instructions), then a decode step for each token of the answer — including hidden reasoning tokens you never show the user. Cache grows with prompt + those tokens. You still have to parse. The model can emit "sorry" instead of a label.
+
+Jev: the sequence is complete. One forward pass. Classification heads, not a language-modeling head. Physically no next-token loop, so no KV cache and no JSON. Python reads numbers.
+
+Hedge: TypeSafe has not published Jev's internals. Public claim is one pass, typed questions. "Encoder + heads" is our reading.
+
+Implication for this talk, not the scorecard: if the job is routing, paying for a decode loop is optional. If the job is a reply, you still need a writer — that is the leftover arm of the cascade. Numbers (1.6s / 272ms, $0.26 / $0.004) wait until results.
 -->
 
 ---
