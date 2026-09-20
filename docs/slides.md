@@ -8,8 +8,35 @@ title: Jev for email triage
 
 Email triage with TypeSafe Jev
 
+<small>Code, data, and every run in this deck: [github.com/skiingfalcon/jev-email-cascade](https://github.com/skiingfalcon/jev-email-cascade)</small>
+
 <!--
 Title only. One sentence: this is a proof that a decision model can label and route email without generating text.
+-->
+
+---
+
+# Why this exists
+
+Inbox volume is **routing**, not drafting.
+
+A chat model can do it.  
+Slow, expensive, and the confidence it types is not a probability.
+
+<!--
+The product problem: classify the email, then auto / review / (maybe) draft.
+Generative models are built to write. We need probabilities we can put in an if-statement.
+Don't say "it won't return JSON" -- Terra returned parseable JSON 74/74 in our run. The problem is what the number inside the JSON means.
+-->
+
+---
+
+# The bet
+
+**Jev decides. Ordinary code routes. A generative model only handles leftovers.**
+
+<!--
+Cascade, not a better prompt. Policy is Python thresholds. LLM is optional, and only for the uncertain band.
 -->
 
 ---
@@ -112,7 +139,7 @@ email  →  prefill  →  KV cache  email  →  one pass
 | | Decoder | Jev |
 | --- | --- | --- |
 | Steps | 1 + *every output token* | 1 |
-| KV cache | grows while it writes | none |
+| KV cache | grows while it writes | computed once, never kept |
 | Output | words | probabilities |
 | Implication | slow, billed per token, can ramble | fast, no prose to parse, cannot draft |
 
@@ -121,36 +148,11 @@ Same attention equation. Different loop.
 
 Decoder: prefill the email (and the instructions), then a decode step for each token of the answer — including hidden reasoning tokens you never show the user. Cache grows with prompt + those tokens. You still have to parse. The model can emit "sorry" instead of a label.
 
-Jev: the sequence is complete. One forward pass. Classification heads, not a language-modeling head. Physically no next-token loop, so no KV cache and no JSON. Python reads numbers.
+Jev: the sequence is complete. One forward pass. Classification heads, not a language-modeling head. It still computes K and V for every token inside that pass -- attention needs them -- but there is no next-token loop, so nothing is kept for a later step. No cache to grow, no JSON to parse. Python reads numbers.
 
 Hedge: TypeSafe has not published Jev's internals. Public claim is one pass, typed questions. "Encoder + heads" is our reading.
 
 Implication for this talk, not the scorecard: if the job is routing, paying for a decode loop is optional. If the job is a reply, you still need a writer — that is the leftover arm of the cascade. Numbers (1.6s / 272ms, $0.26 / $0.004) wait until results.
--->
-
----
-
-# Why this exists
-
-Inbox volume is **routing**, not drafting.
-
-A chat model can do it.  
-Slow, expensive, and the confidence it types is not a probability.
-
-<!--
-The product problem: classify the email, then auto / review / (maybe) draft.
-Generative models are built to write. We need probabilities we can put in an if-statement.
-Don't say "it won't return JSON" -- Terra returned parseable JSON 74/74 in our run. The problem is what the number inside the JSON means.
--->
-
----
-
-# The bet
-
-**Jev decides. Ordinary code routes. A generative model only handles leftovers.**
-
-<!--
-Cascade, not a better prompt. Policy is Python thresholds. LLM is optional, and only for the uncertain band.
 -->
 
 ---
@@ -252,6 +254,19 @@ opportunity: a vendor pitch is not our opportunity.
 
 ---
 
+# What `auto` / `review` mean
+
+**auto** — stop. No human, no LLM.  
+**review** — queue a person, with the evidence attached.  
+**llm** — optional draft, still not the decision.
+
+<!--
+Auto is not "send a reply." It is "the labels are trusted enough to file and move on."
+Thresholds: category 0.60 (0.85 billing), priority 0.60, noul 0.80. Injection always review. needs_decision or dissatisfied → not auto.
+-->
+
+---
+
 # One email in
 
 > Trouble connecting our account… I'm frustrated… Could you help as soon as possible?
@@ -286,19 +301,6 @@ A boring "how do I export the report?" with no complaint → auto.
 
 ---
 
-# What `auto` / `review` mean
-
-**auto** — stop. No human, no LLM.  
-**review** — queue a person, with the evidence attached.  
-**llm** — optional draft, still not the decision.
-
-<!--
-Auto is not "send a reply." It is "the labels are trusted enough to file and move on."
-Thresholds: category 0.60 (0.85 billing), priority 0.60, noul 0.80. Injection always review. needs_decision or dissatisfied → not auto.
--->
-
----
-
 # Results — 74 emails
 
 | | Jev | gpt-5.6-terra | GLiNER2.5* |
@@ -311,30 +313,12 @@ Thresholds: category 0.60 (0.85 billing), priority 0.60, noul 0.80. Injection al
 | Latency p50 | 272 ms | 1.6 s | **79 ms** |
 
 Jev vs Terra: accuracy close, cost and speed not.  
-\* first wiring — next slide.
+\* first wiring — see "The free one".
 
 <!--
 Same questions, same labels, same scorer. Terra list price ~65× Jev. OpenRouter billed Jev. GLiNER ran on the Spark's GB10, $0 marginal.
 Opportunity and injection: 100% for Jev and Terra.
 Jev 70/74 review — almost all needs_decision in the "cannot tell" band. Question wording, not "Jev can't classify."
--->
-
----
-
-# The free one
-
-GLiNER2.5 — open-weight encoder, same class as Jev.  
-Typed labels in, scores out, one forward pass.
-
-**79 ms. $0. Scored at chance on yes/no.**
-
-Every flag sat in the "cannot tell" band on 50–59 of 74 emails.
-
-<!--
-Same class of model: bidirectional encoder, schema of typed labels, one pass, no generation. Apache 2.0, 287M params, runs on our GPU.
-It was never confident about anything -- 45.5% on yes/no is a coin flip. A model that reads "does this email state a deadline?" should do far better than that even at 287M.
-Leading suspect is our wiring: GLiNER2 takes label descriptions; our schema builder has a fallback that may be sending bare label names ("internal", "vendor") with no criteria. Category predictions clustered on those two names -- 36 and 16 of 74.
-Verdict: our integration, not the model. Fix before judging. It is the only on-prem option on the table, so it matters. Details: docs/cto-brief.md, item 3.
 -->
 
 ---
@@ -369,6 +353,24 @@ Be fair: Jev is not never-wrong-with-confidence. billing-00/01/02 "process a ref
 Time references cut both ways: explicit numeric deadlines under-detected, routine clock times over-detected.
 Padding buries the signal: "URGENT, within 24 hours" at the top of 11KB of filler, missed on both questions. Retrieve first, judge second -- measured, not asserted.
 None of these is a threshold problem. deadline_present is the next question to reword after needs_decision.
+-->
+
+---
+
+# The free one
+
+GLiNER2.5 — open-weight encoder, same class as Jev.  
+Typed labels in, scores out, one forward pass.
+
+**79 ms. $0. Scored at chance on yes/no.**
+
+Every flag sat in the "cannot tell" band on 50–59 of 74 emails.
+
+<!--
+Same class of model: bidirectional encoder, schema of typed labels, one pass, no generation. Apache 2.0, 287M params, runs on our GPU.
+It was never confident about anything -- 45.5% on yes/no is a coin flip. A model that reads "does this email state a deadline?" should do far better than that even at 287M.
+Leading suspect is our wiring: GLiNER2 takes label descriptions; our schema builder has a fallback that may be sending bare label names ("internal", "vendor") with no criteria. Category predictions clustered on those two names -- 36 and 16 of 74.
+Verdict: our integration, not the model. Fix before judging. It is the only on-prem option on the table, so it matters. Details: docs/cto-brief.md, item 3.
 -->
 
 ---
