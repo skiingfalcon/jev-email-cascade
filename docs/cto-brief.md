@@ -54,7 +54,7 @@ Every backend answers the same 8 questions, each one of three types (see
 | **Confidence on wrong category calls** | 0.39, 0.46, 0.65 — *"not sure"* | 0.96, 0.93 — *"certain"* | not evaluated | **Jev, decisively** |
 | **Auto-routed items with zero errors** | 4 / 4 | 18 / 26 | 1 / 1 | Jev / GLiNER clean; Terra 8 misses |
 | **Calls per email** | 1 | 1 | 1 | |
-| **Output tokens to parse** | 0 (typed answers) | 9,733 (+1,451 hidden reasoning) | 0 (typed answers) | Jev / GLiNER |
+| **Output tokens to parse** | 0 (typed answers) | 9,733 (1,451 of them hidden reasoning) | 0 (typed answers) | Jev / GLiNER |
 | **Errors / retries** | 0 | 0 | 0 | |
 
 ## What this means

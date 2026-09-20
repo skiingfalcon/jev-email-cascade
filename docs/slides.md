@@ -59,6 +59,29 @@ You can strap a classification head on a decoder like Qwen. That is one forward 
 
 ---
 
+# Why writers are slow: the KV cache
+
+Every new token attends to every token before it.  
+The **KV cache** keeps those keys and values so each step only computes the newest token.
+
+- **Writer** — one forward pass *per output token*, re-reading a cache that grows with the text
+- **Decider** — one forward pass. No steps, so nothing to cache.
+
+| | generated tokens (74 emails) | p50 |
+| --- | ---: | ---: |
+| gpt-5.6-terra | 9,733 (1,451 hidden reasoning) | 1.6 s |
+| Jev | 0 | 272 ms |
+| GLiNER2.5 | 0 | 79 ms |
+
+<!--
+KV cache: for each layer, the K and V projections of every token seen so far are stored. Generating token n computes Q for token n only and attends over the stored K/V for 1..n-1. Without it, every step would recompute attention for the whole prefix -- quadratic. With it, each step is linear in the prefix, but the step is memory-bandwidth bound: it re-reads the whole cache plus the weights. That is why decode is slow per token and why context length costs memory, not just compute.
+Hidden reasoning tokens go through the same loop and are billed as output ($12/M for Terra). 1,451 of Terra's 9,733 generated tokens were reasoning we never saw.
+An encoder / decider does the whole sequence in one pass: all K and V computed once, used once, discarded. There is no "next step" to cache for. Its entire cost is one prefill, which is why 287M-parameter GLiNER2.5 answers in 79 ms.
+Prompt caching (OpenAI's cached_tokens, llama-server's slot/prompt cache) is KV-cache reuse across requests: keep the K/V of a shared prefix so the next request only prefills what changed. Our Terra run reused 0 cached tokens -- our prompt puts the email first and the eight questions after it, so consecutive requests share no prefix. Putting the fixed question block before the email is the fix if we ever care about Terra's bill; it is irrelevant to Jev, which has no cache to reuse.
+-->
+
+---
+
 # Why this exists
 
 Inbox volume is **routing**, not drafting.
