@@ -1,0 +1,36 @@
+{
+  "backend": "gliner",
+  "model": "fastino/gliner2.5-multi-v1",
+  "reasoning_effort": null,
+  "pricing": null,
+  "backend_info": {
+    "device": "cuda",
+    "gpu_name": "NVIDIA GB10"
+  },
+  "llm_provider": null,
+  "llm_model": null,
+  "started": "2026-09-20T01:29:06+00:00",
+  "finished": "2026-09-20T01:29:13+00:00",
+  "wall_s": 6.386,
+  "n": 74,
+  "cost_usd": 0.0,
+  "cost_per_1k_emails": 0.0,
+  "calls_per_email": 1.0,
+  "input_tokens": 6246,
+  "output_tokens": 0,
+  "cached_input_tokens": null,
+  "reasoning_tokens": null,
+  "latency_ms_p50": 78.99031500028286,
+  "latency_ms_p95": 93.63518290024317,
+  "llm_calls": 0,
+  "llm_cost_usd": null,
+  "llm_reasoning_tokens": null,
+  "llm_latency_ms_p50": null,
+  "llm_latency_ms_p95": null,
+  "route_counts": {
+    "review": 73,
+    "auto": 1
+  },
+  "error_count": 0,
+  "questions_hash": "c42ad7fa4e89"
+}

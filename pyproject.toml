@@ -13,7 +13,11 @@ dependencies = [
 [project.optional-dependencies]
 # Open-weight decision-model backend (--backend gliner). Pulls torch (~2 GB); not installed by
 # default. `uv sync --extra gliner` on the machine that runs it (the Spark).
-gliner = ["gliner2[local]>=2.0"]
+gliner = [
+    "gliner2[local]>=2.0",
+    "protobuf>=5.0",
+    "sentencepiece>=0.2",
+]
 
 [dependency-groups]
 dev = [
