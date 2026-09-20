@@ -22,6 +22,32 @@ NOUL_QUESTIONS = (
 
 BANDS: list[tuple[float, float]] = [(0.0, 0.1), (0.1, 0.3), (0.3, 0.7), (0.7, 0.9), (0.9, 1.001)]
 
+# The three question types every backend answers, explained once so a report.md is readable on
+# its own -- see questions.py for the actual definitions.
+QUESTION_TYPE_INFO: tuple[tuple[str, str, str], ...] = (
+    (
+        "Noul",
+        'A yes/no question answered as a *probability* (0-1), not a boolean. 0.5 means "cannot '
+        'tell", not "somewhat true" -- the policy treats anything between its thresholds as '
+        "uncertain rather than rounding it.",
+        ", ".join(f"`{q}`" for q in NOUL_QUESTIONS),
+    ),
+    (
+        "Choice",
+        "Pick exactly one option from a fixed, named list, with a confidence score. Every "
+        "Choice needs an escape option (`other`) so an out-of-taxonomy email gets a "
+        "low-confidence answer instead of a confident wrong one.",
+        "`category` (8 options)",
+    ),
+    (
+        "Score",
+        "A position on an ordered scale of levels, each described in plain language, not just "
+        "a number. The reported value is a probability-weighted expectation across the levels, "
+        'so "2.7" means real uncertainty between levels 2 and 3, not a fractional level.',
+        "`priority` (4 levels, 0-3)",
+    ),
+)
+
 
 def load_run(run_dir: Path) -> tuple[dict, list[dict]]:
     run_json = json.loads((run_dir / "run.json").read_text())
@@ -208,6 +234,11 @@ def render_rich(metrics: dict, run_dir: Path, console: Console | None = None) ->
         f"[bold]{run_dir}[/bold]  backend={metrics['backend']}  model={metrics['model']}  "
         f"n={metrics['n']}"
     )
+    console.print(
+        "[dim]Noul = yes/no as a probability, 0.5 = cannot tell  |  Choice = pick one option "
+        "with a confidence  |  Score = a level 0-3, reported as a probability-weighted "
+        "expectation across levels[/dim]"
+    )
 
     cat = metrics["category"]
     console.print(f"category accuracy: {_fmt(cat['accuracy'])}  95% CI {ci_text_from(cat['ci'])}")
@@ -277,10 +308,47 @@ def ci_text_from(ci: tuple[float, float] | None) -> str:
     return "-" if ci is None else f"{ci[0]:.2f}-{ci[1]:.2f}"
 
 
+def _io_markdown(metrics: dict) -> list[str]:
+    return [
+        "## Input & output",
+        "",
+        f"**Input:** {metrics['n']} emails -- subject, sender, and body (quoted history and "
+        "signatures stripped, body capped at 6,000 characters) -- each sent to the "
+        f"`{metrics['backend']}` backend along with the same 8 typed questions below "
+        f"({_fmt(metrics['calls_per_email'])} call(s) per email).",
+        "",
+        "**Output:** one typed answer per question -- a Noul, Choice, or Score, explained next "
+        "-- turned by a threshold policy into a final category, priority, six yes/no flags, and "
+        "a route (`auto` / `review` / `llm`). Written to `results.jsonl`; the tables below score "
+        "those answers against each email's true labels.",
+    ]
+
+
+def _question_types_markdown() -> list[str]:
+    lines = [
+        "## Question types",
+        "",
+        "Every backend answers the same 8 questions, each typed as one of three kinds "
+        "(`src/jev_email_cascade/questions.py`):",
+        "",
+        "| type | what it means | used for |",
+        "| --- | --- | --- |",
+    ]
+    for name, meaning, used_for in QUESTION_TYPE_INFO:
+        lines.append(f"| **{name}** | {meaning} | {used_for} |")
+    return lines
+
+
 def render_markdown(metrics: dict, run_dir: Path) -> str:
     lines = [
         f"### {run_dir}",
         f"backend=`{metrics['backend']}` model=`{metrics['model']}` n={metrics['n']}",
+        "",
+        *_io_markdown(metrics),
+        "",
+        *_question_types_markdown(),
+        "",
+        "## Summary",
         "",
         f"- category accuracy: {_fmt(metrics['category']['accuracy'])} "
         f"(CI {ci_text_from(metrics['category']['ci'])})",

@@ -1,6 +1,24 @@
 ### runs/20260919T184646Z
 backend=`frontier` model=`gpt-5.6-terra` n=74
 
+## Input & output
+
+**Input:** 74 emails -- subject, sender, and body (quoted history and signatures stripped, body capped at 6,000 characters) -- each sent to the `frontier` backend along with the same 8 typed questions below (1 call(s) per email).
+
+**Output:** one typed answer per question -- a Noul, Choice, or Score, explained next -- turned by a threshold policy into a final category, priority, six yes/no flags, and a route (`auto` / `review` / `llm`). Written to `results.jsonl`; the tables below score those answers against each email's true labels.
+
+## Question types
+
+Every backend answers the same 8 questions, each typed as one of three kinds (`src/jev_email_cascade/questions.py`):
+
+| type | what it means | used for |
+| --- | --- | --- |
+| **Noul** | A yes/no question answered as a *probability* (0-1), not a boolean. 0.5 means "cannot tell", not "somewhat true" -- the policy treats anything between its thresholds as uncertain rather than rounding it. | `awaiting_reply`, `deadline_present`, `dissatisfied`, `needs_decision`, `opportunity`, `injection_suspected` |
+| **Choice** | Pick exactly one option from a fixed, named list, with a confidence score. Every Choice needs an escape option (`other`) so an out-of-taxonomy email gets a low-confidence answer instead of a confident wrong one. | `category` (8 options) |
+| **Score** | A position on an ordered scale of levels, each described in plain language, not just a number. The reported value is a probability-weighted expectation across the levels, so "2.7" means real uncertainty between levels 2 and 3, not a fractional level. | `priority` (4 levels, 0-3) |
+
+## Summary
+
 - category accuracy: 0.973 (CI 0.93-1.00)
 - priority exact: 0.905 (CI 0.84-0.96), within-1: 1 (CI 1.00-1.00)
 - routes: {'review': 48, 'auto': 26}
