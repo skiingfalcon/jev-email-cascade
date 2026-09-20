@@ -53,7 +53,8 @@ A decider is an encoder used for a decision, not for search.
 
 <!--
 Don't overclaim a third architecture. Structurally: decoder vs encoder. "System One" is what you do with the encoder's last layer.
-You can strap a classification head on Qwen (openjev). That is still sequential generation or a heavy decoder doing a reader's job.
+Hedge if asked: TypeSafe has not published Jev's internals. "Single forward pass, typed heads" is what they say publicly; "encoder" is our reading of that.
+You can strap a classification head on a decoder like Qwen. That is one forward pass too, not generation -- the cost is that you carry a model sized to write, and a causal mask that only looks backward.
 -->
 
 ---
@@ -63,11 +64,12 @@ You can strap a classification head on Qwen (openjev). That is still sequential 
 Inbox volume is **routing**, not drafting.
 
 A chat model can do it.  
-Slow, expensive, overconfident, and it might not even return JSON.
+Slow, expensive, and the confidence it types is not a probability.
 
 <!--
 The product problem: classify the email, then auto / review / (maybe) draft.
 Generative models are built to write. We need probabilities we can put in an if-statement.
+Don't say "it won't return JSON" -- Terra returned parseable JSON 74/74 in our run. The problem is what the number inside the JSON means.
 -->
 
 ---
@@ -91,7 +93,7 @@ Score against gold labels
 
 <!--
 Not a live inbox. Generator + answer key. Enough to measure accuracy, cost, latency, and whether we can auto-route.
-Backends: Jev, gpt-5.6-terra, (later) a self-hosted encoder. Same questions, same report.
+Three backends ran: Jev (via OpenRouter), gpt-5.6-terra (OpenAI), and GLiNER2.5 (open-weight encoder, self-hosted on the Spark's GPU). Same questions, same report.
 -->
 
 ---
@@ -228,21 +230,40 @@ Thresholds: category 0.60 (0.85 billing), priority 0.60, noul 0.80. Injection al
 
 # Results — 74 emails
 
-| | Jev | gpt-5.6-terra |
-| --- | ---: | ---: |
-| Category | 95.9% | 97.3% |
-| Priority exact | 78.4% | 90.5% |
-| Flags (mean) | 89% | 91% |
-| Auto | 4 | 26 |
-| Cost | **$0.004** | $0.26 |
-| Latency p50 | **272 ms** | 1.6 s |
+| | Jev | gpt-5.6-terra | GLiNER2.5* |
+| --- | ---: | ---: | ---: |
+| Category | 95.9% | 97.3% | 45.9% |
+| Priority exact | 78.4% | 90.5% | 16.2% |
+| Flags (mean) | 89.0% | 90.5% | 45.5% |
+| Auto | 4 | 26 | 1 |
+| Cost | **$0.004** | $0.26 | **$0** |
+| Latency p50 | 272 ms | 1.6 s | **79 ms** |
 
-Accuracy is close. Cost and speed are not.
+Jev vs Terra: accuracy close, cost and speed not.  
+\* first wiring — next slide.
 
 <!--
-Same questions, same labels, same scorer. Terra list price ~65× Jev. OpenRouter billed Jev.
-Opportunity and injection: 100% both.
+Same questions, same labels, same scorer. Terra list price ~65× Jev. OpenRouter billed Jev. GLiNER ran on the Spark's GB10, $0 marginal.
+Opportunity and injection: 100% for Jev and Terra.
 Jev 70/74 review — almost all needs_decision in the "cannot tell" band. Question wording, not "Jev can't classify."
+-->
+
+---
+
+# The free one
+
+GLiNER2.5 — open-weight encoder, same class as Jev.  
+Typed labels in, scores out, one forward pass.
+
+**79 ms. $0. Scored at chance on yes/no.**
+
+Every flag sat in the "cannot tell" band on 50–59 of 74 emails.
+
+<!--
+Same class of model: bidirectional encoder, schema of typed labels, one pass, no generation. Apache 2.0, 287M params, runs on our GPU.
+It was never confident about anything -- 45.5% on yes/no is a coin flip. A model that reads "does this email state a deadline?" should do far better than that even at 287M.
+Leading suspect is our wiring: GLiNER2 takes label descriptions; our schema builder has a fallback that may be sending bare label names ("internal", "vendor") with no criteria. Category predictions clustered on those two names -- 36 and 16 of 74.
+Verdict: our integration, not the model. Fix before judging. It is the only on-prem option on the table, so it matters. Details: docs/cto-brief.md, item 3.
 -->
 
 ---
@@ -257,8 +278,26 @@ When they were **wrong** on category:
 Jev's 4 autos were clean.  
 Terra's 26 autos: 8 had a wrong flag.
 
+On the six flags, both were confidently wrong sometimes:  
+Jev 21, Terra 29 (of 444) — mostly on labels we'd argue about too.
+
 <!--
 Calibration vs a number the model typed in JSON. This is the routing argument.
+Be fair: Jev is not never-wrong-with-confidence. billing-00/01/02 "process a refund" → needs_decision 0.85–0.88 against a False label; outage / payroll emails → dissatisfied 0.83–0.96. Our labels are arguable there. The point is fewer confident misses and honest 0.4–0.6s where it counts.
+-->
+
+---
+
+# Where Jev was wrong
+
+- "**within 24 hours**" / "**within 48 hours**" → `deadline_present` **0.25–0.35**
+- "stand-up moved to **10am**" → `deadline_present` **0.86–0.89**, priority ~1.7 (true: 0)
+- 12K-char padded email → category `other` 0.39, deadline 0.29 — both missed
+
+<!--
+Time references cut both ways: explicit numeric deadlines under-detected, routine clock times over-detected.
+Padding buries the signal: "URGENT, within 24 hours" at the top of 11KB of filler, missed on both questions. Retrieve first, judge second -- measured, not asserted.
+None of these is a threshold problem. deadline_present is the next question to reword after needs_decision.
 -->
 
 ---
@@ -268,11 +307,12 @@ Calibration vs a number the model typed in JSON. This is the routing argument.
 Not a new model.
 
 1. Stop auto-escalating `needs_decision`
-2. Tighten that question's wording
+2. Tighten that question's wording — then `deadline_present`
 3. Then retune thresholds
 
 <!--
-Counterfactual on the existing Jev file: ignore needs_decision as a route lever → ~35 auto, not 4.
+Counterfactual on the existing Jev file: drop needs_decision as a route lever entirely → 12 auto, not 4 (1 of the 12 has a wrong label). Not 35.
+What still blocks the other 62: dissatisfied true (12), deadline_present in the cannot-tell band (11), category uncertain (8), dissatisfied cannot-tell (6), awaiting_reply cannot-tell (6), priority flat/low (5), injection (3).
 Do not lower noul_act first — cheap auto, more confident mistakes.
 -->
 
@@ -285,6 +325,6 @@ Python is the **router**.
 Chat earns its cost only on leftovers.
 
 <!--
-Hosted US API — compliance is a separate decision. Open-weight encoder path exists; first wiring was not a fair test.
-Ask: volume run after the needs_decision wording fix.
+Hosted US API — compliance is a separate decision. The open-weight encoder path exists and ran (79 ms, $0) but scored at chance; suspected cause is our schema wiring dropping label descriptions. Fix that before the volume run so the free on-prem option gets a fair test.
+Ask: (1) fix and re-run GLiNER2.5; (2) volume run after the needs_decision wording fix.
 -->
