@@ -64,7 +64,7 @@ $$\mathrm{Attention}(Q,K,V)=\mathrm{softmax}\left(\frac{QK^{T}+M}{\sqrt{d_k}}\ri
 
 $M$ is the mask. The **head** is what you read out.
 
-At inbox scale, $QK^{T}$ is a huge matrix multiply. That is why this runs on **GPUs**.
+At scale, $QK^{T}$ is a huge matrix multiply. That is why this runs on **GPUs**.
 
 <!--
 Walk the equation if the room wants it. Otherwise: mask decides who can look at whom; the head decides whether you get a word, a vector, or a probability.
