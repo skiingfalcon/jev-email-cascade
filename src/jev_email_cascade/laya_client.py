@@ -1,15 +1,22 @@
-"""Laya (Convai Innovations' open-weight decision model) served locally by ``laya-serve``.
+"""Open-weight decision models served locally over Jev's own ``POST /v1/systemone`` protocol.
 
-``laya-serve`` speaks Jev's own ``POST /v1/systemone`` wire protocol, so the request body and the
-``answers`` / ``usage`` it returns are the shapes ``JevClient`` already handles. The differences:
-there is no API key unless the server was started with ``LAYA_API_KEY``, no per-token price
-($0 marginal cost), and an optional ``model`` naming one of the server's resident checkpoints
-(``english`` / ``typed-decisions`` / ``multilingual``) instead of a hosted model id. The server is
-the sibling ``laya-host`` project (``C:\\Users\\kghosh\\projects\\laya-host``).
+Both servers live in the sibling ``local-decision-model`` project
+(``C:\\Users\\kghosh\\projects\\local-decision-model``):
+
+- ``laya`` -- Convai Innovations' Laya (421M encoder) under ``laya-serve``. An optional ``model``
+  names a resident checkpoint (``english`` / ``typed-decisions`` / ``multilingual``).
+- ``rune`` -- Invergent's Rune 26B-A4B v3 (Gemma 4 MoE) under llama.cpp's ``llama-server``. The
+  GGUF's metadata makes llama-server render the surogate decision prompt and read the option
+  logits, so the request is the same body.
+
+Both speak the protocol ``JevClient`` already handles, so the request body and the ``answers`` /
+``usage`` they return parse the same way. The differences: no API key unless the server was
+started with one, and no per-token price ($0 marginal cost).
 """
 
 from __future__ import annotations
 
+import ntpath
 import time
 from typing import Any
 
@@ -22,17 +29,19 @@ from jev_email_cascade.jev_client import RETRYABLE_STATUS
 from jev_email_cascade.questions import Question, questions_json
 
 STATE_MODES = ("raw", "rendered")
+# Backend name -> the Settings field prefix that configures it.
+SERVERS = ("laya", "rune")
 
 
 class LayaClient:
-    """Talks to a local ``laya-serve``. Construct via :meth:`from_settings`."""
-
-    name = "laya"
+    """Talks to a local System One server (``laya-serve`` or ``llama-server``). Construct via
+    :meth:`from_settings`."""
 
     def __init__(
         self,
         *,
         url: str,
+        name: str = "laya",
         model: str | None = None,
         api_key: str | None = None,
         state_mode: str = "raw",
@@ -45,6 +54,7 @@ class LayaClient:
     ) -> None:
         if state_mode not in STATE_MODES:
             raise ValueError(f"state_mode must be one of {STATE_MODES}")
+        self.name = name
         self.url = url
         self.model = model
         self.state_mode = state_mode
@@ -61,14 +71,25 @@ class LayaClient:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, *, transport: httpx.BaseTransport | None = None
+        cls,
+        settings: Settings,
+        *,
+        server: str = "laya",
+        transport: httpx.BaseTransport | None = None,
     ) -> LayaClient:
+        if server not in SERVERS:
+            raise ValueError(f"server must be one of {SERVERS}")
+
+        def field(suffix: str):
+            return getattr(settings, f"{server}_{suffix}")
+
         return cls(
-            url=settings.laya_url,
-            model=settings.laya_model,
-            api_key=settings.laya_api_key,
-            state_mode=settings.laya_state_mode,
-            max_len=settings.laya_max_len,
+            url=field("url"),
+            name=server,
+            model=field("model"),
+            api_key=field("api_key"),
+            state_mode=field("state_mode"),
+            max_len=field("max_len"),
             timeout_s=settings.timeout_s,
             transport=transport,
         )
@@ -90,8 +111,16 @@ class LayaClient:
     def healthy(self) -> bool:
         return self.health() is not None
 
+    def _get_json(self, path: str) -> dict | None:
+        try:
+            r = self._client.get(f"{self.base_url}{path}")
+        except httpx.HTTPError:
+            return None
+        return r.json() if r.status_code == 200 else None
+
     def backend_info(self) -> dict:
-        """Recorded in run.json: where the server says each checkpoint computes, at which SHA."""
+        """Recorded in run.json: what the server says it is running. laya-serve's /health names
+        each checkpoint's device and SHA; llama-server's /props names the GGUF and the build."""
         info: dict[str, Any] = {
             "url": self.url,
             "model": self.model,
@@ -101,6 +130,13 @@ class LayaClient:
         health = self.health()
         if health is not None:
             info["server"] = health
+        props = self._get_json("/props")
+        if props is not None:
+            info["props"] = {
+                k: props[k]
+                for k in ("model_path", "build_info", "n_ctx", "total_slots")
+                if k in props
+            }
         return info
 
     def encode_state(self, state: dict[str, str]) -> dict[str, str]:
@@ -152,7 +188,10 @@ class LayaClient:
         routing = raw.get("routing") or {}
         return DecisionResult(
             answers=answers,
-            model=routing.get("model") or raw.get("model") or self.model,
+            # llama-server reports the GGUF's full path as `model`; keep just the file name.
+            model=ntpath.basename(routing.get("model") or raw.get("model") or "")
+            or self.model
+            or self.name,
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
             cost_usd=0.0,

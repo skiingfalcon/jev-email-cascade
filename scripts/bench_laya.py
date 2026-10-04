@@ -1,23 +1,25 @@
-"""Latency / throughput / memory benchmark for a local laya-serve, using this repo's emails and
-question set (the same request bodies `cascade run --backend laya` sends).
+"""Latency / throughput / memory benchmark for a local decision-model server (laya-serve or
+Rune's llama-server, both in local-decision-model), using this repo's emails and question set
+(the same request bodies `cascade run --backend laya|rune` sends).
 
 Phases:
   first     the first request this process sends (a true cold start needs a fresh server)
-  seq       every email, --repeat times, one request at a time: client p50/p95/p99 and the
-            server's own X-Inference-Time-Ms
+  seq       every email, --repeat times, one request at a time: client p50/p95/p99 and, for
+            laya-serve, the server's own X-Inference-Time-Ms
   conc-N    the same requests with N in flight (laya-serve runs one inference at a time, so
-            this measures queueing, not parallel speedup)
-  batch-B   POST /v1/systemone/batch with B emails per call: per-email amortised latency
+            this measures queueing; llama-server runs up to -np requests in parallel)
+  batch-B   laya only: POST /v1/systemone/batch with B emails per call, per-email amortised
 
-Writes runs/bench-<stamp>/bench.json and bench.md.
+Writes runs/bench-<stamp>-<label>/bench.json and bench.md.
 
-    uv run python scripts/bench_laya.py [--model english] [--label cpu] [--repeat 2]
+    uv run python scripts/bench_laya.py [--backend laya|rune] [--model english] [--label cpu]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import subprocess
 import sys
 import time
@@ -28,7 +30,7 @@ from pathlib import Path
 import httpx
 
 from jev_email_cascade.config import Settings
-from jev_email_cascade.laya_client import LayaClient
+from jev_email_cascade.laya_client import SERVERS, LayaClient
 from jev_email_cascade.prepare import load_emails, prepare
 from jev_email_cascade.questions import QUESTIONS, questions_json
 from jev_email_cascade.stats import percentile
@@ -133,12 +135,17 @@ class Bench:
 
 
 def to_markdown(report: dict) -> str:
-    devices = report["health"].get("checkpoint_devices") or report["health"].get("device")
+    gguf = (report.get("server_info") or {}).get("model_path")
+    model = report["model"] or (ntpath.basename(gguf) if gguf else "router default")
+    devices = (
+        report["health"].get("checkpoint_devices")
+        or report["health"].get("device")
+        or report.get("server_info")
+    )
     lines = [
-        f"# Laya bench `{report['label']}` ({report['started']})",
+        f"# {report.get('backend', 'laya')} bench `{report['label']}` ({report['started']})",
         "",
-        f"- server: `{report['url']}`, model `{report['model'] or 'router default'}`, "
-        f"state `{report['state_mode']}`",
+        f"- server: `{report['url']}`, model `{model}`, state `{report['state_mode']}`",
         f"- device: {devices}",
         f"- emails: {report['n_emails']} x {report['repeat']} repeat(s); "
         f"errors: {report['errors']}",
@@ -161,41 +168,48 @@ def to_markdown(report: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--label", default="laya", help="name for this configuration, e.g. cpu / rocm")
-    ap.add_argument("--model", default=None, help="english | typed-decisions | multilingual")
+    ap.add_argument("--backend", default="laya", choices=SERVERS)
+    ap.add_argument("--label", default=None, help="name for this configuration, e.g. cpu / rocm")
+    ap.add_argument("--model", default=None, help="laya: english | typed-decisions | multilingual")
     ap.add_argument("--state-mode", default=None, choices=("raw", "rendered"))
     ap.add_argument("--repeat", type=int, default=2)
     ap.add_argument("--concurrency", default="2,4,8,16")
-    ap.add_argument("--batch-sizes", default="8,32,64")
+    ap.add_argument(
+        "--batch-sizes", default=None, help="laya default 8,32,64; llama-server has no batch route"
+    )
     ap.add_argument("--source", type=Path, default=REPO / "data" / "emails.jsonl")
     args = ap.parse_args()
+    if args.batch_sizes is None:
+        args.batch_sizes = "8,32,64" if args.backend == "laya" else ""
+    label = args.label or args.backend
 
     settings = Settings()
-    overrides = {"laya_model": args.model} if args.model else {}
+    overrides = {f"{args.backend}_model": args.model} if args.model else {}
     if args.state_mode:
-        overrides["laya_state_mode"] = args.state_mode
-    laya = LayaClient.from_settings(settings.model_copy(update=overrides))
+        overrides[f"{args.backend}_state_mode"] = args.state_mode
+    laya = LayaClient.from_settings(settings.model_copy(update=overrides), server=args.backend)
     health = laya.health()
     if health is None:
-        print(f"laya-serve not answering at {laya.base_url}/health", file=sys.stderr)
+        print(f"{args.backend} server not answering at {laya.base_url}/health", file=sys.stderr)
         return 1
     port = httpx.URL(laya.url).port or 80
     states = [prepare(e).state for e in load_emails(args.source)]
+    api_key = getattr(settings, f"{args.backend}_api_key")
     http = httpx.Client(
         timeout=httpx.Timeout(300.0, connect=5.0),
-        headers={"Authorization": f"Bearer {settings.laya_api_key}"}
-        if settings.laya_api_key
-        else {},
+        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
     )
     bench = Bench(laya, http)
 
     report: dict = {
-        "label": args.label,
+        "label": label,
+        "backend": args.backend,
         "started": datetime.now(UTC).isoformat(timespec="seconds"),
         "url": laya.url,
         "model": laya.model,
         "state_mode": laya.state_mode,
         "health": health,
+        "server_info": laya.backend_info().get("props"),
         "n_emails": len(states),
         "repeat": args.repeat,
         "memory_idle": server_memory(port),
@@ -225,7 +239,7 @@ def main() -> int:
 
     report["memory_peak"] = peak
     report["errors"] = bench.errors
-    out = REPO / "runs" / f"bench-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{args.label}"
+    out = REPO / "runs" / f"bench-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{label}"
     out.mkdir(parents=True)
     (out / "bench.json").write_text(json.dumps(report, indent=2) + "\n")
     (out / "bench.md").write_text(to_markdown(report))

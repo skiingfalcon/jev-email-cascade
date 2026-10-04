@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     gliner_device: str = "cpu"  # "cpu" | "cuda" | "mps"
     gliner_fp16: bool = False
 
-    # Laya served locally by laya-serve (the sibling laya-host project), `--backend laya`.
+    # Laya served by laya-serve (sibling project local-decision-model), `--backend laya`.
     # Same /v1/systemone wire protocol as Jev; $0 marginal cost. LAYA_MODEL picks a resident
     # checkpoint (english / typed-decisions / multilingual); unset lets the server's Router choose.
     laya_url: str = "http://127.0.0.1:8000/v1/systemone"
@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # into one body string the way the GLiNER backend does.
     laya_state_mode: str = "raw"
     laya_max_len: int | None = None
+
+    # Rune 26B-A4B v3 (Invergent) served by llama.cpp's llama-server in the same project,
+    # `--backend rune`. Same /v1/systemone protocol; the GGUF carries the decision template.
+    rune_url: str = "http://127.0.0.1:8001/v1/systemone"
+    rune_api_key: str | None = None
+    rune_model: str | None = None
+    rune_state_mode: str = "raw"
+    rune_max_len: int | None = None
 
     runs_dir: Path = Path("runs")
     timeout_s: float = 60.0

@@ -1,4 +1,4 @@
-.PHONY: sync test test-live lint fmt gen demo run run-laya bench-laya report compare
+.PHONY: sync test test-live lint fmt gen demo run run-laya run-rune bench-laya report compare
 
 sync:
 	uv sync
@@ -6,7 +6,7 @@ sync:
 test:
 	uv run pytest -q
 
-# Needs laya-serve on LAYA_URL (laya-host); skipped otherwise.
+# Needs the local-decision-model servers on LAYA_URL / RUNE_URL; each is skipped if down.
 test-live:
 	uv run pytest -q -m live
 
@@ -29,8 +29,11 @@ run:
 run-laya:
 	uv run cascade run --backend laya
 
+run-rune:
+	uv run cascade run --backend rune
+
 bench-laya:
-	uv run python scripts/bench_laya.py --label $(or $(LABEL),laya)
+	uv run python scripts/bench_laya.py --backend $(or $(BACKEND),laya) --label $(or $(LABEL),$(or $(BACKEND),laya))
 
 report:
 	uv run cascade report $(RUN)

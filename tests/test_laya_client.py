@@ -134,13 +134,15 @@ def test_422_is_not_retried_and_reported() -> None:
 
 def test_health_and_backend_info() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/health"
+        if request.url.path != "/health":
+            return httpx.Response(404)  # laya-serve has no /props
         return httpx.Response(200, json={"status": "ok", "device": "cpu"})
 
     client = LayaClient(url=URL, transport=httpx.MockTransport(handler))
     assert client.healthy()
     info = client.backend_info()
     assert info["server"]["device"] == "cpu"
+    assert "props" not in info
     assert info["state_mode"] == "raw"
 
 
@@ -165,3 +167,79 @@ def test_build_backend_from_settings() -> None:
     assert backend.model == "multilingual"
     assert backend.state_mode == "rendered"
     assert backend.base_url == "http://127.0.0.1:8000"
+
+
+def test_build_rune_backend_from_settings() -> None:
+    backend = build_backend("rune", _settings(rune_api_key=None))
+    assert isinstance(backend, LayaClient)
+    assert backend.name == "rune"
+    assert backend.url == "http://127.0.0.1:8001/v1/systemone"
+    assert backend.base_url == "http://127.0.0.1:8001"
+    assert backend.model is None
+
+
+def test_llama_server_response_without_routing_or_model() -> None:
+    # llama-server's /v1/systemone (b11382) returns answers and usage only.
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "model" not in body
+        return httpx.Response(
+            200,
+            json={
+                "answers": {
+                    "department": {
+                        "type": "choice",
+                        "choice": "billing",
+                        "probabilities": {"billing": 0.98, "other": 0.02},
+                        "confidence": 0.96,
+                    },
+                    "is_urgent": {"type": "noul", "noul": 0.12},
+                },
+                "usage": {"input_tokens": 619, "output_tokens": 0},
+            },
+        )
+
+    client = LayaClient(
+        url="http://127.0.0.1:8001/v1/systemone",
+        name="rune",
+        transport=httpx.MockTransport(handler),
+    )
+    result = client.decide(STATE, _questions())
+    assert result.ok
+    assert result.model == "rune"
+    assert result.answers["department"].choice == "billing"
+    assert result.input_tokens == 619
+
+
+def test_backend_info_records_llama_server_props() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/props":
+            return httpx.Response(
+                200,
+                json={
+                    "model_path": "Rune-26B-A4B-v3-Q8_0.gguf",
+                    "build_info": "b11382-11fe0215",
+                    "total_slots": 1,
+                    "chat_template": "...long...",
+                },
+            )
+        return httpx.Response(404)
+
+    client = LayaClient(
+        url="http://127.0.0.1:8001/v1/systemone",
+        name="rune",
+        transport=httpx.MockTransport(handler),
+    )
+    info = client.backend_info()
+    assert info["props"] == {
+        "model_path": "Rune-26B-A4B-v3-Q8_0.gguf",
+        "build_info": "b11382-11fe0215",
+        "total_slots": 1,
+    }
+
+
+def test_unknown_server_rejected() -> None:
+    with pytest.raises(ValueError):
+        LayaClient.from_settings(_settings(), server="jev")

@@ -194,7 +194,9 @@ mass uniformly — an honest placeholder, not a measurement. Rows where this hap
 `probabilities_reconstructed: true` in `results.jsonl` so the report never mistakes it for a
 calibrated distribution the way it can for Jev's or `gen-logprob`'s.
 
-### Running the Laya comparison (open-weight, served locally, $0 marginal)
+### Running the local decision models: Laya and Rune (open-weight, $0 marginal)
+
+> **Summary for non-specialists:** [docs/decision-models.md](docs/decision-models.md) compares all five models (Jev, gpt-5.6-terra, Rune, Laya, GLiNER) in plain language, with the technical details below it.
 
 [Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0) is the closest
 open-weight analogue to Jev: a ModernBERT/mmBERT encoder with typed decision heads, and its
@@ -202,14 +204,23 @@ open-weight analogue to Jev: a ModernBERT/mmBERT encoder with typed decision hea
 (`laya_client.py`) sends exactly the body `JevClient` sends, and the answers parse with the same
 `Answer.from_json`.
 
-The server is the sibling project `C:\Users\kghosh\projects\laya-host`. It runs as the scheduled
-task `LayaServe` on the Radeon 8060S through ROCm, with all three checkpoints resident.
+[Rune 26B-A4B v3](https://huggingface.co/surogate/rune-26b-a4b-GGUF) (Invergent, Apache 2.0) is a much larger
+decision model: a Gemma 4 MoE (26.5B parameters, 4B active) that reads its answer from the option
+letters' logits. Its Decision Index score (57.44) sits just below Jev 1.13's (57.89). llama.cpp's `llama-server` (b11382 or later) serves it on the same protocol, so `--backend rune` is the same
+client pointed at another port.
+
+Both servers live in [local-decision-model-halo](https://github.com/skiingfalcon/local-decision-model-halo)
+(`C:\Users\kghosh\projects\local-decision-model`):
+- Laya runs as the scheduled task `LayaServe` on ROCm, with all three checkpoints resident.
+- Rune runs as `RuneServe`: the Q8_0 GGUF on llama.cpp Vulkan.
 
 ```bash
 uv run cascade run --backend laya                         # router picks the checkpoint
 LAYA_MODEL=typed-decisions LAYA_STATE_MODE=rendered uv run cascade run --backend laya
 uv run python scripts/bench_laya.py --label rocm --model typed-decisions   # latency/throughput/memory
-make test-live                                            # 2 round-trip tests against the server
+uv run cascade run --backend rune                         # Rune Q8_0
+uv run python scripts/bench_laya.py --backend rune --label rune-q8
+make test-live                                            # round-trip tests against both servers
 ```
 
 Results on these 74 emails (2026-10-04, laya 0.3.26, `LAYA_REVISION=reviewed`), with the rows
@@ -219,6 +230,8 @@ above for reference:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | jev | 0.959 | 0.955 | 1.00 | 0.784 / 0.919 | 0.079 / 0.097 | 272 |
 | frontier (gpt-5.6-terra) | 0.973 | 0.967 | 1.00 | 0.905 / 1.00 | 0.071 / 0.072 | 1,600 |
+| **rune 26B-A4B v3 Q8_0**, raw state, Vulkan | **0.959** | **0.958** | **1.00** | 0.743 / **1.00** | 0.090 / 0.113 | 2,080 |
+| rune 26B-A4B v3 Q8_0, rendered state, Vulkan | 0.959 | 0.958 | 1.00 | 0.703 / 1.00 | 0.085 / 0.108 | 2,120 |
 | laya `typed-decisions`, rendered state, ROCm | 0.784 | 0.789 | 0.788 | 0.405 / 0.811 | 0.165 / 0.149 | 274 |
 | laya `english`, ROCm | 0.662 | 0.650 | 0.769 | 0.230 / 0.824 | 0.189 / 0.114 | 245 |
 | laya `english`, CPU (16 Zen 5 cores) | 0.649 | 0.638 | 0.750 | 0.230 / 0.811 | 0.189 / 0.116 | 2,040 |
@@ -226,9 +239,13 @@ above for reference:
 | gliner (GB10) | 0.459 | 0.405 | 0.558 | 0.162 / 0.703 | 0.318 / 0.330 | 79 |
 
 What the runs show:
-- **Checkpoint choice.** `typed-decisions` is clearly the right checkpoint for this question set. `multilingual` should not be used for English mail.
+- **Rune matches Jev on category** (0.959, 3 misses out of 74, as for Jev) and is never more than one priority level off. Its yes/no answers are nearly as well calibrated, at $0 marginal cost and fully local.
+  - The price is latency: about 2.1 s per email on the 8060S (0.48 emails/s). Prompt processing saturates the GPU at about 2,300 tokens per email, and 4 parallel slots don't help.
+  - It routed 71 of 74 emails to `review`, about the same as Jev (70 of 74). The policy in `policy.py` is conservative for every backend.
+  - BF16 crashes llama.cpp Vulkan on this driver (`ErrorDeviceLost`). Q8_0 is within KL 0.009 of BF16 per Livesport's measurements.
+- **Checkpoint choice (Laya).** `typed-decisions` is clearly the right checkpoint for this question set. `multilingual` should not be used for English mail.
 - **Laya is still well short of Jev.** It confuses support↔internal and sales↔vendor. `awaiting_reply` comes out inverted (raw accuracy 0.27), and priority is mostly off by one level (Laya's own docs flag `score` as its weak area).
-- **Routing.** Jev's thresholds in `policy.py` send every Laya email to `review`. Laya's confidences are lower and less calibrated, so those thresholds would need refitting on held-out data before Laya could auto-route anything.
+- **Routing.** `policy.py` sends all 74 Laya emails to `review` (Jev: 70, Rune: 71). The policy is conservative by design for every backend. Laya never clears the auto-route bar at all.
 - **Speed and cost.** On the iGPU (ROCm) Laya matches Jev's latency at $0. On CPU it is ~8x slower.
 - **Throughput.** The server runs one inference at a time, so `--parallel` and the batch endpoint don't raise throughput (≈4 emails/s on the iGPU). Large batches also grow torch's cached GPU memory (7.5 GB → 59 GB after batch-64) until the server restarts.
 
