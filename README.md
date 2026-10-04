@@ -194,6 +194,48 @@ mass uniformly — an honest placeholder, not a measurement. Rows where this hap
 `probabilities_reconstructed: true` in `results.jsonl` so the report never mistakes it for a
 calibrated distribution the way it can for Jev's or `gen-logprob`'s.
 
+### Running the Laya comparison (open-weight, served locally, $0 marginal)
+
+[Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0) is the closest
+open-weight analogue to Jev: a ModernBERT/mmBERT encoder with typed decision heads, and its
+`laya-serve` speaks Jev's own `POST /v1/systemone` protocol. That means `--backend laya`
+(`laya_client.py`) sends exactly the body `JevClient` sends, and the answers parse with the same
+`Answer.from_json`.
+
+The server is the sibling project `C:\Users\kghosh\projects\laya-host`. It runs as the scheduled
+task `LayaServe` on the Radeon 8060S through ROCm, with all three checkpoints resident.
+
+```bash
+uv run cascade run --backend laya                         # router picks the checkpoint
+LAYA_MODEL=typed-decisions LAYA_STATE_MODE=rendered uv run cascade run --backend laya
+uv run python scripts/bench_laya.py --label rocm --model typed-decisions   # latency/throughput/memory
+make test-live                                            # 2 round-trip tests against the server
+```
+
+Results on these 74 emails (2026-10-04, laya 0.3.26, `LAYA_REVISION=reviewed`), with the rows
+above for reference:
+
+| backend | category acc | macro F1 | acc @70% coverage | priority exact / ±1 | noul Brier / ECE | p50 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| jev | 0.959 | 0.955 | 1.00 | 0.784 / 0.919 | 0.079 / 0.097 | 272 |
+| frontier (gpt-5.6-terra) | 0.973 | 0.967 | 1.00 | 0.905 / 1.00 | 0.071 / 0.072 | 1,600 |
+| laya `typed-decisions`, rendered state, ROCm | 0.784 | 0.789 | 0.788 | 0.405 / 0.811 | 0.165 / 0.149 | 274 |
+| laya `english`, ROCm | 0.662 | 0.650 | 0.769 | 0.230 / 0.824 | 0.189 / 0.114 | 245 |
+| laya `english`, CPU (16 Zen 5 cores) | 0.649 | 0.638 | 0.750 | 0.230 / 0.811 | 0.189 / 0.116 | 2,040 |
+| laya `multilingual`, ROCm | 0.473 | 0.383 | 0.558 | 0.243 / 0.838 | 0.376 / 0.396 | 136 |
+| gliner (GB10) | 0.459 | 0.405 | 0.558 | 0.162 / 0.703 | 0.318 / 0.330 | 79 |
+
+What the runs show:
+- **Checkpoint choice.** `typed-decisions` is clearly the right checkpoint for this question set. `multilingual` should not be used for English mail.
+- **Laya is still well short of Jev.** It confuses support↔internal and sales↔vendor. `awaiting_reply` comes out inverted (raw accuracy 0.27), and priority is mostly off by one level (Laya's own docs flag `score` as its weak area).
+- **Routing.** Jev's thresholds in `policy.py` send every Laya email to `review`. Laya's confidences are lower and less calibrated, so those thresholds would need refitting on held-out data before Laya could auto-route anything.
+- **Speed and cost.** On the iGPU (ROCm) Laya matches Jev's latency at $0. On CPU it is ~8x slower.
+- **Throughput.** The server runs one inference at a time, so `--parallel` and the batch endpoint don't raise throughput (≈4 emails/s on the iGPU). Large batches also grow torch's cached GPU memory (7.5 GB → 59 GB after batch-64) until the server restarts.
+
+`report.py` now also prints per-class P/R/F1, selective accuracy at 50/70/90% coverage, adjacent
+vs multi-level priority errors, and noul Brier/ECE for every backend, following the evaluation
+checklist in the Laya write-up (calibration and coverage, not just top-line accuracy).
+
 ## Jev vs a generative model, on the same questions
 
 This is the comparison the project exists to run, not just Jev's own accuracy. Five backends

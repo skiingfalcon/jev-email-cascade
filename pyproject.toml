@@ -43,3 +43,5 @@ ignore = ["B008"]  # Typer Argument/Option defaults are the documented pattern
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["live: needs a running laya-serve on LAYA_URL (deselected by default; make test-live)"]
+addopts = "-m 'not live'"

@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     gliner_device: str = "cpu"  # "cpu" | "cuda" | "mps"
     gliner_fp16: bool = False
 
+    # Laya served locally by laya-serve (the sibling laya-host project), `--backend laya`.
+    # Same /v1/systemone wire protocol as Jev; $0 marginal cost. LAYA_MODEL picks a resident
+    # checkpoint (english / typed-decisions / multilingual); unset lets the server's Router choose.
+    laya_url: str = "http://127.0.0.1:8000/v1/systemone"
+    laya_api_key: str | None = None
+    laya_model: str | None = None
+    # "raw" sends the {subject, from, received, body} dict as Jev gets it; "rendered" folds it
+    # into one body string the way the GLiNER backend does.
+    laya_state_mode: str = "raw"
+    laya_max_len: int | None = None
+
     runs_dir: Path = Path("runs")
     timeout_s: float = 60.0
 
