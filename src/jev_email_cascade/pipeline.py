@@ -23,6 +23,7 @@ from jev_email_cascade.generative import (
 )
 from jev_email_cascade.gliner_backend import GlinerBackend
 from jev_email_cascade.jev_client import JevClient
+from jev_email_cascade.laya_client import SERVERS, LayaClient
 from jev_email_cascade.llm_client import LlmClient
 from jev_email_cascade.mock_jev import MockJev
 from jev_email_cascade.policy import Route, decide_result
@@ -30,7 +31,17 @@ from jev_email_cascade.prepare import Prepared, load_emails, prepare
 from jev_email_cascade.questions import QUESTIONS, questions_json
 from jev_email_cascade.stats import percentile
 
-BACKEND_NAMES = ("jev", "mock-jev", "gen-json", "gen-logprob", "mock-gen", "frontier", "gliner")
+BACKEND_NAMES = (
+    "jev",
+    "mock-jev",
+    "gen-json",
+    "gen-logprob",
+    "mock-gen",
+    "frontier",
+    "gliner",
+    "laya",
+    "rune",
+)
 REASONING_EFFORTS = ("low", "medium", "high")
 
 
@@ -70,6 +81,8 @@ def build_backend(
         )
     if name == "gliner":
         return GlinerBackend.from_settings(settings)
+    if name in SERVERS:
+        return LayaClient.from_settings(settings, server=name, transport=transport)
     raise ValueError(f"unknown backend {name!r}; choose from {BACKEND_NAMES}")
 
 
@@ -91,6 +104,22 @@ def _preflight_frontier(backend: DecisionBackend) -> None:
             f"frontier preflight failed: GET {getattr(client, 'base_url', '?')}/models/"
             f"{getattr(client, 'model', '?')} was not 200 -- check OPENAI_API_KEY, "
             "OPENAI_BASE_URL, and that the key has access to FRONTIER_MODEL"
+        )
+
+
+_LOCAL_SERVER_HINT = {
+    "laya": "scripts\\serve.ps1 or the LayaServe scheduled task",
+    "rune": "scripts\\serve-rune.ps1 or the RuneServe scheduled task",
+}
+
+
+def _preflight_local(backend: DecisionBackend) -> None:
+    """Fail fast if the local decision-model server is not up: one GET /health."""
+    if not backend.healthy():
+        raise RuntimeError(
+            f"{backend.name} preflight failed: GET {backend.base_url}/health did not answer 200 "
+            f"-- start the server (local-decision-model: {_LOCAL_SERVER_HINT[backend.name]}) or "
+            f"check {backend.name.upper()}_URL"
         )
 
 
@@ -235,6 +264,8 @@ def run(
     )
     if backend_name == "frontier":
         _preflight_frontier(backend)
+    if backend_name in SERVERS and transport is None:
+        _preflight_local(backend)
     llm_client = (
         LlmClient.from_settings(
             settings, transport=llm_transport, reasoning_effort=reasoning_effort

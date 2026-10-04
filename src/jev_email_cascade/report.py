@@ -85,9 +85,70 @@ def category_metrics(rows: list[dict]) -> dict:
     }
 
 
+def _choice_confidence(a: dict) -> float | None:
+    if a.get("confidence") is not None:
+        return float(a["confidence"])
+    probs = a.get("probabilities")
+    return max(probs.values()) if probs else None
+
+
+def category_class_metrics(rows: list[dict]) -> dict:
+    """Per-class precision / recall / F1 and their macro average over the true classes."""
+    tp: Counter = Counter()
+    fp: Counter = Counter()
+    fn: Counter = Counter()
+    for row in rows:
+        true = row["labels"]["category"]
+        pred = (row.get("answers", {}).get("category") or {}).get("choice") or "(error)"
+        if pred == true:
+            tp[true] += 1
+        else:
+            fp[pred] += 1
+            fn[true] += 1
+    per_class: dict[str, dict] = {}
+    for label in sorted({row["labels"]["category"] for row in rows}):
+        p_den = tp[label] + fp[label]
+        r_den = tp[label] + fn[label]
+        precision = tp[label] / p_den if p_den else 0.0
+        recall = tp[label] / r_den if r_den else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        per_class[label] = {"precision": precision, "recall": recall, "f1": f1, "support": r_den}
+    f1s = [m["f1"] for m in per_class.values()]
+    return {"per_class": per_class, "macro_f1": sum(f1s) / len(f1s) if f1s else None}
+
+
+COVERAGES = (0.5, 0.7, 0.9, 1.0)
+
+
+def selective_accuracy(rows: list[dict], coverages: tuple[float, ...] = COVERAGES) -> dict:
+    """Category accuracy on the most-confident fraction of emails: "if we only automate the top
+    70% by confidence, how often is the automated subset right?" Errors and answers without a
+    confidence sort last."""
+    scored = []
+    for row in rows:
+        a = row.get("answers", {}).get("category") or {}
+        conf = _choice_confidence(a)
+        scored.append(
+            (conf if conf is not None else -1.0, a.get("choice") == row["labels"]["category"])
+        )
+    scored.sort(key=lambda t: t[0], reverse=True)
+    out: dict[str, dict] = {}
+    for cov in coverages:
+        k = max(1, round(cov * len(scored))) if scored else 0
+        subset = scored[:k]
+        out[f"{cov:.0%}"] = {
+            "n": k,
+            "accuracy": sum(ok for _, ok in subset) / k if k else None,
+            "threshold": subset[-1][0] if subset else None,
+        }
+    return out
+
+
 def priority_metrics(rows: list[dict]) -> dict:
     exact: list[bool] = []
     within1: list[bool] = []
+    adjacent_errors = 0
+    jump_errors = 0
     for row in rows:
         true = row["labels"]["priority"]
         a = row.get("answers", {}).get("priority") or {}
@@ -99,13 +160,78 @@ def priority_metrics(rows: list[dict]) -> dict:
         pred = round(score)
         exact.append(pred == true)
         within1.append(abs(pred - true) <= 1)
+        if abs(pred - true) == 1:
+            adjacent_errors += 1
+        elif abs(pred - true) >= 2:
+            jump_errors += 1
     n = len(exact)
     return {
         "exact": sum(exact) / n if n else None,
         "exact_ci": bootstrap_ci(exact),
         "within1": sum(within1) / n if n else None,
         "within1_ci": bootstrap_ci(within1),
+        "adjacent_errors": adjacent_errors,
+        "jump_errors": jump_errors,
         "n": n,
+    }
+
+
+ECE_BINS = 10
+
+
+def _ece(pairs: list[tuple[float, bool]], bins: int = ECE_BINS) -> tuple[float | None, list[dict]]:
+    """Expected calibration error over equal-width bins of P(true), with the bins themselves so
+    the sample size behind each one stays visible."""
+    if not pairs:
+        return None, []
+    table = []
+    total = 0.0
+    for i in range(bins):
+        lo, hi = i / bins, (i + 1) / bins
+        members = [(p, y) for p, y in pairs if lo <= p < hi or (i == bins - 1 and p == 1.0)]
+        if not members:
+            table.append(
+                {"bin": f"{lo:.1f}-{hi:.1f}", "n": 0, "mean_p": None, "positive_rate": None}
+            )
+            continue
+        mean_p = sum(p for p, _ in members) / len(members)
+        rate = sum(y for _, y in members) / len(members)
+        total += len(members) / len(pairs) * abs(mean_p - rate)
+        table.append(
+            {
+                "bin": f"{lo:.1f}-{hi:.1f}",
+                "n": len(members),
+                "mean_p": mean_p,
+                "positive_rate": rate,
+            }
+        )
+    return total, table
+
+
+def noul_probability_metrics(rows: list[dict]) -> dict:
+    """Brier score and ECE per noul question and pooled across all six."""
+    per_q: dict[str, dict] = {}
+    pooled: list[tuple[float, bool]] = []
+    for qid in NOUL_QUESTIONS:
+        pairs = []
+        for row in rows:
+            p = (row.get("answers", {}).get(qid) or {}).get("noul")
+            if p is not None:
+                pairs.append((float(p), bool(row["labels"][qid])))
+        pooled += pairs
+        ece, _ = _ece(pairs)
+        per_q[qid] = {
+            "brier": sum((p - y) ** 2 for p, y in pairs) / len(pairs) if pairs else None,
+            "ece": ece,
+            "n": len(pairs),
+        }
+    ece, bins = _ece(pooled)
+    return {
+        "per_question": per_q,
+        "pooled_brier": sum((p - y) ** 2 for p, y in pooled) / len(pooled) if pooled else None,
+        "pooled_ece": ece,
+        "pooled_bins": bins,
+        "pooled_n": len(pooled),
     }
 
 
@@ -166,8 +292,11 @@ def compute_metrics(run_json: dict, rows: list[dict]) -> dict:
         "model": run_json.get("model"),
         "n": len(rows),
         "category": category_metrics(rows),
+        "category_classes": category_class_metrics(rows),
+        "category_selective": selective_accuracy(rows),
         "priority": priority_metrics(rows),
         "nouls": noul_metrics(rows),
+        "noul_probability": noul_probability_metrics(rows),
         "routes": route_metrics(rows),
         "cost_usd": run_json.get("cost_usd"),
         "cost_per_1k_emails": run_json.get("cost_per_1k_emails"),
@@ -252,10 +381,27 @@ def render_rich(metrics: dict, run_dir: Path, console: Console | None = None) ->
         conf_table.add_row(true, *(_fmt(cat["confusion"][true].get(p, 0)) for p in all_preds))
     console.print(conf_table)
 
+    classes = metrics["category_classes"]
+    f1_table = Table(title=f"category per-class (macro F1 {_fmt(classes['macro_f1'])})")
+    for col in ("class", "precision", "recall", "F1", "support"):
+        f1_table.add_column(col)
+    for label, m in classes["per_class"].items():
+        f1_table.add_row(
+            label, _fmt(m["precision"]), _fmt(m["recall"]), _fmt(m["f1"]), str(m["support"])
+        )
+    console.print(f1_table)
+    console.print("category selective accuracy (top-k by confidence): " + _selective_text(metrics))
+
     pri = metrics["priority"]
     console.print(
         f"priority exact: {_fmt(pri['exact'])} (CI {ci_text_from(pri['exact_ci'])})  "
-        f"within-1: {_fmt(pri['within1'])} (CI {ci_text_from(pri['within1_ci'])})"
+        f"within-1: {_fmt(pri['within1'])} (CI {ci_text_from(pri['within1_ci'])})  "
+        f"errors: {pri['adjacent_errors']} adjacent, {pri['jump_errors']} jump(>=2)"
+    )
+    nprob = metrics["noul_probability"]
+    console.print(
+        f"noul pooled Brier: {_fmt(nprob['pooled_brier'])}  ECE ({ECE_BINS} bins, "
+        f"n={nprob['pooled_n']}): {_fmt(nprob['pooled_ece'])}"
     )
 
     noul_table = Table(title="noul questions")
@@ -308,6 +454,13 @@ def ci_text_from(ci: tuple[float, float] | None) -> str:
     return "-" if ci is None else f"{ci[0]:.2f}-{ci[1]:.2f}"
 
 
+def _selective_text(metrics: dict) -> str:
+    return ", ".join(
+        f"{cov}: {_fmt(m['accuracy'])} (n={m['n']})"
+        for cov, m in metrics["category_selective"].items()
+    )
+
+
 def _io_markdown(metrics: dict) -> list[str]:
     return [
         "## Input & output",
@@ -352,10 +505,17 @@ def render_markdown(metrics: dict, run_dir: Path) -> str:
         "",
         f"- category accuracy: {_fmt(metrics['category']['accuracy'])} "
         f"(CI {ci_text_from(metrics['category']['ci'])})",
+        f"- category macro F1: {_fmt(metrics['category_classes']['macro_f1'])}",
+        f"- category selective accuracy (top-k by confidence): {_selective_text(metrics)}",
         f"- priority exact: {_fmt(metrics['priority']['exact'])} "
         f"(CI {ci_text_from(metrics['priority']['exact_ci'])}), "
         f"within-1: {_fmt(metrics['priority']['within1'])} "
-        f"(CI {ci_text_from(metrics['priority']['within1_ci'])})",
+        f"(CI {ci_text_from(metrics['priority']['within1_ci'])}); "
+        f"{metrics['priority']['adjacent_errors']} adjacent-level and "
+        f"{metrics['priority']['jump_errors']} multi-level errors",
+        f"- noul pooled Brier {_fmt(metrics['noul_probability']['pooled_brier'])}, "
+        f"ECE {_fmt(metrics['noul_probability']['pooled_ece'])} "
+        f"({ECE_BINS} equal-width bins, n={metrics['noul_probability']['pooled_n']})",
         f"- routes: {metrics['routes']}",
         f"- cost: ${_fmt(metrics['cost_usd'])} total, "
         f"${_fmt(metrics['cost_per_1k_emails'])}/1K emails, "
@@ -382,6 +542,35 @@ def render_markdown(metrics: dict, run_dir: Path) -> str:
             f"{_fmt(m['acted_accuracy'])} ({m['acted_n']}/{m['n']}) | "
             f"{_fmt(m['mean_confidence_on_wrong'])} |"
         )
+
+    lines += [
+        "",
+        "**Category per-class**",
+        "",
+        "| class | precision | recall | F1 | support |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for label, m in metrics["category_classes"]["per_class"].items():
+        lines.append(
+            f"| {label} | {_fmt(m['precision'])} | {_fmt(m['recall'])} | {_fmt(m['f1'])} | "
+            f"{m['support']} |"
+        )
+
+    nprob = metrics["noul_probability"]
+    lines += [
+        "",
+        "**Noul probability quality** (Brier: lower is better; ECE over "
+        f"{ECE_BINS} equal-width bins)",
+        "",
+        "| question | Brier | ECE | n |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for qid, m in nprob["per_question"].items():
+        lines.append(f"| {qid} | {_fmt(m['brier'])} | {_fmt(m['ece'])} | {m['n']} |")
+    lines.append(
+        f"| **pooled** | {_fmt(nprob['pooled_brier'])} | {_fmt(nprob['pooled_ece'])} | "
+        f"{nprob['pooled_n']} |"
+    )
 
     cat = metrics["category"]
     all_preds = sorted({p for row in cat["confusion"].values() for p in row})
@@ -416,7 +605,10 @@ COMPARE_COLUMNS = (
     "backend",
     "model",
     "category acc",
+    "cat macro F1",
+    "cat acc @70% cov",
     "priority exact / ±1",
+    "noul Brier / ECE",
     "calls/email",
     "tokens in / out (reasoning)",
     "$ total",
@@ -429,7 +621,9 @@ COMPARE_COLUMNS = (
 
 def _model_text(m: dict) -> str:
     text = str(m["model"])
-    device = (m.get("backend_info") or {}).get("device")
+    info = m.get("backend_info") or {}
+    # laya-serve reports where its checkpoints actually compute under /health.
+    device = info.get("device") or (info.get("server") or {}).get("device")
     if device:
         gpu_name = (m.get("backend_info") or {}).get("gpu_name")
         text += f" @ {gpu_name or device}"
@@ -448,7 +642,11 @@ def _compare_row(run_dir: Path, m: dict) -> list[str]:
         str(m["backend"]),
         _model_text(m),
         _fmt(m["category"]["accuracy"]),
+        _fmt(m["category_classes"]["macro_f1"]),
+        _fmt(m["category_selective"]["70%"]["accuracy"]),
         f"{_fmt(m['priority']['exact'])} / {_fmt(m['priority']['within1'])}",
+        f"{_fmt(m['noul_probability']['pooled_brier'])} / "
+        f"{_fmt(m['noul_probability']['pooled_ece'])}",
         _fmt(m["calls_per_email"]),
         tokens,
         _fmt(m["cost_usd"]),
