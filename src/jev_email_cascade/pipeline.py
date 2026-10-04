@@ -108,7 +108,7 @@ def _preflight_frontier(backend: DecisionBackend) -> None:
 
 
 _LOCAL_SERVER_HINT = {
-    "laya": "scripts\\serve.ps1 or the LayaServe scheduled task",
+    "laya": "scripts\\serve-laya.ps1 or the LayaServe scheduled task",
     "rune": "scripts\\serve-rune.ps1 or the RuneServe scheduled task",
 }
 
