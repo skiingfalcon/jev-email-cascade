@@ -1,0 +1,116 @@
+{
+  "label": "cpu-english",
+  "started": "2026-10-04T00:18:07+00:00",
+  "url": "http://127.0.0.1:8000/v1/systemone",
+  "model": "english",
+  "state_mode": "raw",
+  "health": {
+    "status": "ok",
+    "loaded": [
+      "multilingual",
+      "typed-decisions",
+      "english"
+    ],
+    "revisions": {
+      "english": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+      "typed-decisions": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+      "multilingual": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+    },
+    "device": "cpu",
+    "device_is_preference": false,
+    "checkpoint_devices": {
+      "multilingual": "cpu",
+      "typed-decisions": "cpu",
+      "english": "cpu"
+    },
+    "cpu_fallbacks": {
+      "multilingual": {
+        "count": 0,
+        "last_reason": null
+      },
+      "typed-decisions": {
+        "count": 0,
+        "last_reason": null
+      },
+      "english": {
+        "count": 0,
+        "last_reason": null
+      }
+    }
+  },
+  "n_emails": 74,
+  "repeat": 1,
+  "memory_idle": {
+    "gpu_shared_mb": 0,
+    "pid": 28332,
+    "rss_mb": 5082,
+    "gpu_dedicated_mb": 0,
+    "private_mb": 7052
+  },
+  "phases": {
+    "first": {
+      "n_requests": 1,
+      "n_emails": 1,
+      "wall_s": 2.557562700007111,
+      "emails_per_s": 0.3909972568794578,
+      "client_ms_p50": 2557.530999998562,
+      "client_ms_p95": 2557.530999998562,
+      "client_ms_p99": 2557.530999998562,
+      "server_ms_p50": 2533.98,
+      "server_ms_p95": 2533.98
+    },
+    "seq": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 176.76514970010612,
+      "emails_per_s": 0.41863455622075924,
+      "client_ms_p50": 2397.160549997352,
+      "client_ms_p95": 2548.242519982159,
+      "client_ms_p99": 2995.4978159943066,
+      "server_ms_p50": 2394.955,
+      "server_ms_p95": 2546.1719999999996
+    },
+    "conc-4": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 175.64899859996513,
+      "emails_per_s": 0.42129474457484717,
+      "client_ms_p50": 9594.273250026163,
+      "client_ms_p95": 10395.798454963367,
+      "client_ms_p99": 10766.08327996335,
+      "server_ms_p50": 2400.475,
+      "server_ms_p95": 2573.395
+    },
+    "batch-8": {
+      "n_requests": 10,
+      "n_emails": 74,
+      "wall_s": 166.96896279999055,
+      "emails_per_s": 0.4431961411214096,
+      "client_ms_p50": 2084.105818750686,
+      "client_ms_p95": 3095.518022506438,
+      "client_ms_p99": 3678.0070045075263,
+      "server_ms_p50": 2083.75875,
+      "server_ms_p95": 3095.2008749999986,
+      "note": "latencies are per email (call latency / batch size)"
+    },
+    "batch-32": {
+      "n_requests": 3,
+      "n_emails": 74,
+      "wall_s": 220.1763001999352,
+      "emails_per_s": 0.33609430230593806,
+      "client_ms_p50": 2445.4832625015115,
+      "client_ms_p95": 3694.1065650000382,
+      "client_ms_p99": 3805.0953029999073,
+      "server_ms_p50": 2445.353125,
+      "server_ms_p95": 3693.9911875,
+      "note": "latencies are per email (call latency / batch size)"
+    }
+  },
+  "memory_peak": {
+    "gpu_shared_mb": 0,
+    "rss_mb": 5312,
+    "gpu_dedicated_mb": 0,
+    "private_mb": 7235
+  },
+  "errors": 0
+}

@@ -1,0 +1,71 @@
+{
+  "backend": "laya",
+  "model": "typed-decisions",
+  "reasoning_effort": null,
+  "pricing": null,
+  "backend_info": {
+    "url": "http://127.0.0.1:8000/v1/systemone",
+    "model": "typed-decisions",
+    "state_mode": "raw",
+    "max_len": null,
+    "server": {
+      "status": "ok",
+      "loaded": [
+        "multilingual",
+        "english",
+        "typed-decisions"
+      ],
+      "revisions": {
+        "english": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+        "typed-decisions": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+        "multilingual": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+      },
+      "device": "cpu",
+      "device_is_preference": false,
+      "checkpoint_devices": {
+        "multilingual": "cpu",
+        "english": "cpu",
+        "typed-decisions": "cpu"
+      },
+      "cpu_fallbacks": {
+        "multilingual": {
+          "count": 0,
+          "last_reason": null
+        },
+        "english": {
+          "count": 0,
+          "last_reason": null
+        },
+        "typed-decisions": {
+          "count": 0,
+          "last_reason": null
+        }
+      }
+    }
+  },
+  "llm_provider": null,
+  "llm_model": null,
+  "started": "2026-10-04T00:11:40+00:00",
+  "finished": "2026-10-04T00:15:00+00:00",
+  "wall_s": 200.052,
+  "n": 74,
+  "cost_usd": 0.0,
+  "cost_per_1k_emails": 0.0,
+  "calls_per_email": 1.0,
+  "input_tokens": 117360,
+  "output_tokens": 0,
+  "cached_input_tokens": null,
+  "reasoning_tokens": null,
+  "latency_ms_p50": 2621.9326500431634,
+  "latency_ms_p95": 2954.921655007638,
+  "llm_calls": 0,
+  "llm_cost_usd": null,
+  "llm_reasoning_tokens": null,
+  "llm_latency_ms_p50": null,
+  "llm_latency_ms_p95": null,
+  "route_counts": {
+    "review": 74
+  },
+  "error_count": 0,
+  "questions_hash": "c42ad7fa4e89"
+}

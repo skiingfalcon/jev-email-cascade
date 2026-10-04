@@ -1,0 +1,161 @@
+{
+  "label": "rocm-english",
+  "started": "2026-10-04T00:33:15+00:00",
+  "url": "http://127.0.0.1:8000/v1/systemone",
+  "model": "english",
+  "state_mode": "raw",
+  "health": {
+    "status": "ok",
+    "loaded": [
+      "english",
+      "typed-decisions",
+      "multilingual"
+    ],
+    "revisions": {
+      "english": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+      "typed-decisions": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+      "multilingual": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+    },
+    "device": "cuda",
+    "device_is_preference": false,
+    "checkpoint_devices": {
+      "english": "cuda",
+      "typed-decisions": "cuda",
+      "multilingual": "cuda"
+    },
+    "cpu_fallbacks": {
+      "english": {
+        "count": 0,
+        "last_reason": null
+      },
+      "typed-decisions": {
+        "count": 0,
+        "last_reason": null
+      },
+      "multilingual": {
+        "count": 0,
+        "last_reason": null
+      }
+    }
+  },
+  "n_emails": 74,
+  "repeat": 2,
+  "memory_idle": {
+    "gpu_shared_mb": 113,
+    "pid": 2280,
+    "rss_mb": 2543,
+    "gpu_dedicated_mb": 7459,
+    "private_mb": 3593
+  },
+  "phases": {
+    "first": {
+      "n_requests": 1,
+      "n_emails": 1,
+      "wall_s": 0.2712165000848472,
+      "emails_per_s": 3.6870913078192538,
+      "client_ms_p50": 271.1845999583602,
+      "client_ms_p95": 271.1845999583602,
+      "client_ms_p99": 271.1845999583602,
+      "server_ms_p50": 267.85,
+      "server_ms_p95": 267.85
+    },
+    "seq": {
+      "n_requests": 148,
+      "n_emails": 148,
+      "wall_s": 37.09161919995677,
+      "emails_per_s": 3.9901196872034235,
+      "client_ms_p50": 247.5566000211984,
+      "client_ms_p95": 268.1938999739941,
+      "client_ms_p99": 446.36300499201786,
+      "server_ms_p50": 244.495,
+      "server_ms_p95": 265.3075
+    },
+    "conc-2": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 18.398225100012496,
+      "emails_per_s": 4.022127112682719,
+      "client_ms_p50": 491.56449997099116,
+      "client_ms_p95": 529.51543496456,
+      "client_ms_p99": 818.3389530482235,
+      "server_ms_p50": 245.375,
+      "server_ms_p95": 265.3515
+    },
+    "conc-4": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 18.44027709995862,
+      "emails_per_s": 4.012954881256424,
+      "client_ms_p50": 987.9465999547392,
+      "client_ms_p95": 1133.5125599696755,
+      "client_ms_p99": 1301.9004059559663,
+      "server_ms_p50": 245.67000000000002,
+      "server_ms_p95": 264.1925
+    },
+    "conc-8": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 18.446466600056738,
+      "emails_per_s": 4.011608380315631,
+      "client_ms_p50": 1985.9465999761596,
+      "client_ms_p95": 2203.4558449930046,
+      "client_ms_p99": 2214.6732780116145,
+      "server_ms_p50": 245.85500000000002,
+      "server_ms_p95": 264.57500000000005
+    },
+    "conc-16": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 18.532986099948175,
+      "emails_per_s": 3.9928805644659136,
+      "client_ms_p50": 4000.627500063274,
+      "client_ms_p95": 4136.163565050811,
+      "client_ms_p99": 4142.132747994037,
+      "server_ms_p50": 247.035,
+      "server_ms_p95": 263.9595
+    },
+    "batch-8": {
+      "n_requests": 10,
+      "n_emails": 74,
+      "wall_s": 21.016776499920525,
+      "emails_per_s": 3.5209966666524637,
+      "client_ms_p50": 251.2099000014132,
+      "client_ms_p95": 428.4288056303919,
+      "client_ms_p99": 533.6640011331474,
+      "server_ms_p50": 250.753125,
+      "server_ms_p95": 427.89662499999974,
+      "note": "latencies are per email (call latency / batch size)"
+    },
+    "batch-32": {
+      "n_requests": 3,
+      "n_emails": 74,
+      "wall_s": 28.506232199957594,
+      "emails_per_s": 2.5959235679035157,
+      "client_ms_p50": 266.9298656255705,
+      "client_ms_p95": 521.3414859354089,
+      "client_ms_p99": 543.9558521851723,
+      "server_ms_p50": 266.785,
+      "server_ms_p95": 521.18575,
+      "note": "latencies are per email (call latency / batch size)"
+    },
+    "batch-64": {
+      "n_requests": 2,
+      "n_emails": 74,
+      "wall_s": 28.11865099996794,
+      "emails_per_s": 2.6317051980937625,
+      "client_ms_p50": 320.17039578076947,
+      "client_ms_p95": 393.9366509832871,
+      "client_ms_p99": 400.4936514457331,
+      "server_ms_p50": 319.93149999999997,
+      "server_ms_p95": 393.82014999999996,
+      "note": "latencies are per email (call latency / batch size)"
+    }
+  },
+  "memory_peak": {
+    "gpu_shared_mb": 113,
+    "rss_mb": 2544,
+    "gpu_dedicated_mb": 22444,
+    "private_mb": 11777
+  },
+  "errors": 0
+}
