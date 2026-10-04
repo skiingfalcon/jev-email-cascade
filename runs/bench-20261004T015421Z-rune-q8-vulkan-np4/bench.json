@@ -1,0 +1,89 @@
+{
+  "label": "rune-q8-vulkan-np4",
+  "backend": "rune",
+  "started": "2026-10-04T01:42:38+00:00",
+  "url": "http://127.0.0.1:8001/v1/systemone",
+  "model": null,
+  "state_mode": "raw",
+  "health": {
+    "status": "ok"
+  },
+  "server_info": {
+    "model_path": "C:\\Users\\kghosh\\projects\\local-decision-model\\state\\hf\\hub\\models--owao--surogate-rune-26b-a4b-systemone\\snapshots\\f6cf5c19a05713cb9b2c59a57cd79e85ab8d2ffd\\Rune-26B-A4B-v3-Q8_0.gguf",
+    "build_info": "b11382-11fe02151",
+    "total_slots": 4
+  },
+  "n_emails": 74,
+  "repeat": 1,
+  "memory_idle": {
+    "gpu_shared_mb": 782,
+    "pid": 7532,
+    "rss_mb": 969,
+    "gpu_dedicated_mb": 28673,
+    "private_mb": 29678
+  },
+  "phases": {
+    "first": {
+      "n_requests": 1,
+      "n_emails": 1,
+      "wall_s": 2.990842100000009,
+      "emails_per_s": 0.33435399347895933,
+      "client_ms_p50": 2990.810100105591,
+      "client_ms_p95": 2990.810100105591,
+      "client_ms_p99": 2990.810100105591,
+      "server_ms_p50": null,
+      "server_ms_p95": null
+    },
+    "seq": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 172.16996860003565,
+      "emails_per_s": 0.4298078265432447,
+      "client_ms_p50": 2317.046649986878,
+      "client_ms_p95": 2366.4082049799617,
+      "client_ms_p99": 2654.6996980148797,
+      "server_ms_p50": null,
+      "server_ms_p95": null
+    },
+    "conc-2": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 171.87511220003944,
+      "emails_per_s": 0.4305451734854665,
+      "client_ms_p50": 3677.2117499494925,
+      "client_ms_p95": 6012.535330012906,
+      "client_ms_p99": 7208.424651010427,
+      "server_ms_p50": null,
+      "server_ms_p95": null
+    },
+    "conc-4": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 171.65116749994922,
+      "emails_per_s": 0.43110688425711924,
+      "client_ms_p50": 4664.619999995921,
+      "client_ms_p95": 12474.209425027922,
+      "client_ms_p99": 144199.66428796295,
+      "server_ms_p50": null,
+      "server_ms_p95": null
+    },
+    "conc-8": {
+      "n_requests": 74,
+      "n_emails": 74,
+      "wall_s": 172.793610899942,
+      "emails_per_s": 0.42825657508164755,
+      "client_ms_p50": 15194.154600030743,
+      "client_ms_p95": 37375.58008501073,
+      "client_ms_p99": 42286.706731000435,
+      "server_ms_p50": null,
+      "server_ms_p95": null
+    }
+  },
+  "memory_peak": {
+    "gpu_shared_mb": 783,
+    "rss_mb": 1012,
+    "gpu_dedicated_mb": 28763,
+    "private_mb": 29819
+  },
+  "errors": 0
+}

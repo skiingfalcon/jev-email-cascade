@@ -1,0 +1,46 @@
+{
+  "backend": "rune",
+  "model": "Rune-26B-A4B-v3-Q8_0.gguf",
+  "reasoning_effort": null,
+  "pricing": null,
+  "backend_info": {
+    "url": "http://127.0.0.1:8001/v1/systemone",
+    "model": null,
+    "state_mode": "raw",
+    "max_len": null,
+    "server": {
+      "status": "ok"
+    },
+    "props": {
+      "model_path": "C:\\Users\\kghosh\\projects\\local-decision-model\\state\\hf\\hub\\models--owao--surogate-rune-26b-a4b-systemone\\snapshots\\f6cf5c19a05713cb9b2c59a57cd79e85ab8d2ffd\\Rune-26B-A4B-v3-Q8_0.gguf",
+      "build_info": "b11382-11fe02151",
+      "total_slots": 1
+    }
+  },
+  "llm_provider": null,
+  "llm_model": null,
+  "started": "2026-10-04T01:28:14+00:00",
+  "finished": "2026-10-04T01:30:51+00:00",
+  "wall_s": 156.705,
+  "n": 74,
+  "cost_usd": 0.0,
+  "cost_per_1k_emails": 0.0,
+  "calls_per_email": 1.0,
+  "input_tokens": 172122,
+  "output_tokens": 0,
+  "cached_input_tokens": null,
+  "reasoning_tokens": null,
+  "latency_ms_p50": 2098.4901000047103,
+  "latency_ms_p95": 2181.8386950704735,
+  "llm_calls": 0,
+  "llm_cost_usd": null,
+  "llm_reasoning_tokens": null,
+  "llm_latency_ms_p50": null,
+  "llm_latency_ms_p95": null,
+  "route_counts": {
+    "review": 71,
+    "auto": 3
+  },
+  "error_count": 0,
+  "questions_hash": "c42ad7fa4e89"
+}
